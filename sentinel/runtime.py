@@ -11,6 +11,7 @@ from typing import Optional
 from .agent import Agent, AgentConfig
 from .db import Database
 from .ollama import OllamaClient
+from .probes import ProbeRunner
 
 log = logging.getLogger("sentinel.runtime")
 
@@ -35,6 +36,7 @@ class ExperimentRuntime:
         self.experiment_id = experiment_id
         self.agents: list[Agent] = []
         self.agent_names: dict[str, str] = {}  # agent_id -> name
+        self.probe_runner: Optional[ProbeRunner] = None
         self._stop = False
 
     def add_agent(self, agent: Agent):
@@ -132,6 +134,19 @@ class ExperimentRuntime:
                     if on_message:
                         await on_message(turn, result["agent_name"], result["content"])
 
+                    # Run probes if configured
+                    if self.probe_runner:
+                        visible = self._get_visible_messages(agent) if self.probe_runner.mode in ("injected", "both") else None
+                        probe_results = await self.probe_runner.run_probes(agent, turn, visible)
+                        if probe_results and on_message:
+                            for pr in probe_results:
+                                if pr.get("drift_score") is not None:
+                                    await on_message(
+                                        turn,
+                                        f"{agent.config.name} [probe:{pr['mode']}]",
+                                        f"[{pr['category']}] drift={pr['drift_score']:.3f}",
+                                    )
+
                     # Delay between turns (but not after the last one if stopping)
                     if not self._stop and (max_turns is None or turn < max_turns):
                         await asyncio.sleep(cycle_delay_s)
@@ -161,6 +176,8 @@ def create_experiment(
     cycle_delay_s: float = 30.0,
     max_turns: Optional[int] = None,
     description: str = "",
+    probe_mode: Optional[str] = None,
+    probe_interval: int = 20,
 ) -> ExperimentRuntime:
     """Create an experiment with agents and return a ready-to-run runtime.
 
@@ -219,6 +236,17 @@ def create_experiment(
 
         agent = Agent(agent_id, ac, client, digest)
         runtime.add_agent(agent)
+
+    # Attach probe runner if configured
+    if probe_mode:
+        runtime.probe_runner = ProbeRunner(
+            db=db,
+            client=client,
+            experiment_id=experiment_id,
+            mode=probe_mode,
+            interval=probe_interval,
+        )
+        log.info("Probes enabled: mode=%s, interval=%d turns", probe_mode, probe_interval)
 
     log.info("Created experiment '%s' (%s) with %d agents", name, experiment_id[:8], len(agent_configs))
     return runtime

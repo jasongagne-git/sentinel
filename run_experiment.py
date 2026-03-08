@@ -43,6 +43,9 @@ async def main():
     parser.add_argument("config", help="Path to experiment config JSON")
     parser.add_argument("--max-turns", type=int, default=None, help="Max interaction turns")
     parser.add_argument("--delay", type=float, default=None, help="Seconds between turns")
+    parser.add_argument("--probe", default=None, choices=["shadow", "injected", "both"],
+                        help="Enable probes: shadow (no contamination), injected (enters conversation), both")
+    parser.add_argument("--probe-interval", type=int, default=20, help="Probe every N turns (default 20)")
     parser.add_argument("--db", default="experiments/sentinel.db", help="Database path")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     args = parser.parse_args()
@@ -99,11 +102,15 @@ async def main():
         cycle_delay_s=cycle_delay,
         max_turns=max_turns,
         description=config.get("description", ""),
+        probe_mode=args.probe,
+        probe_interval=args.probe_interval,
     )
 
     print(f"\nSENTINEL Experiment: {config['name']}")
     print(f"Agents: {len(agent_configs)} | Topology: {config.get('topology', 'full_mesh')}")
     print(f"Max turns: {max_turns or 'unlimited'} | Delay: {cycle_delay}s")
+    if args.probe:
+        print(f"Probes: {args.probe} every {args.probe_interval} turns")
     print(f"Database: {args.db}")
     print(f"\nPress Ctrl+C to stop gracefully.\n")
 
