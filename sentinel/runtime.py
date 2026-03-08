@@ -11,7 +11,7 @@ from typing import Optional
 from .agent import Agent, AgentConfig
 from .db import Database
 from .ollama import OllamaClient
-from .probes import ProbeRunner
+from .probes import ProbeRunner, TriggerConfig
 
 log = logging.getLogger("sentinel.runtime")
 
@@ -134,6 +134,12 @@ class ExperimentRuntime:
                     if on_message:
                         await on_message(turn, result["agent_name"], result["content"])
 
+                    # Feed message to drift monitor for threshold tracking
+                    if self.probe_runner:
+                        self.probe_runner.record_turn(
+                            agent.agent_id, result["content"], turn,
+                        )
+
                     # Run probes if configured
                     if self.probe_runner:
                         visible = self._get_visible_messages(agent) if self.probe_runner.mode in ("injected", "both") else None
@@ -178,6 +184,8 @@ def create_experiment(
     description: str = "",
     probe_mode: Optional[str] = None,
     probe_interval: int = 20,
+    probe_strategy: str = "scheduled",
+    trigger_config: Optional[TriggerConfig] = None,
 ) -> ExperimentRuntime:
     """Create an experiment with agents and return a ready-to-run runtime.
 
@@ -245,8 +253,13 @@ def create_experiment(
             experiment_id=experiment_id,
             mode=probe_mode,
             interval=probe_interval,
+            strategy=probe_strategy,
+            trigger_config=trigger_config,
         )
-        log.info("Probes enabled: mode=%s, interval=%d turns", probe_mode, probe_interval)
+        log.info(
+            "Probes enabled: mode=%s, strategy=%s, interval=%d turns",
+            probe_mode, probe_strategy, probe_interval,
+        )
 
     log.info("Created experiment '%s' (%s) with %d agents", name, experiment_id[:8], len(agent_configs))
     return runtime

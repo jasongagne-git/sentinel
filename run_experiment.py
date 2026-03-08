@@ -17,6 +17,7 @@ from sentinel.agent import AgentConfig
 from sentinel.db import Database
 from sentinel.ollama import OllamaClient
 from sentinel.persona import load_persona_config
+from sentinel.probes import TriggerConfig
 from sentinel.runtime import create_experiment
 
 
@@ -46,6 +47,13 @@ async def main():
     parser.add_argument("--probe", default=None, choices=["shadow", "injected", "both"],
                         help="Enable probes: shadow (no contamination), injected (enters conversation), both")
     parser.add_argument("--probe-interval", type=int, default=20, help="Probe every N turns (default 20)")
+    parser.add_argument("--probe-strategy", default="scheduled",
+                        choices=["scheduled", "triggered", "hybrid"],
+                        help="Probe trigger strategy (default: scheduled)")
+    parser.add_argument("--vocab-threshold", type=float, default=0.15,
+                        help="Vocabulary JSD threshold for triggered probes (default 0.15)")
+    parser.add_argument("--sentiment-threshold", type=float, default=0.3,
+                        help="Sentiment delta threshold for triggered probes (default 0.3)")
     parser.add_argument("--db", default="experiments/sentinel.db", help="Database path")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     args = parser.parse_args()
@@ -92,6 +100,14 @@ async def main():
             trait_fingerprint=fingerprint,
         ))
 
+    # Build trigger config if using triggered/hybrid strategy
+    trigger_config = None
+    if args.probe_strategy in ("triggered", "hybrid"):
+        trigger_config = TriggerConfig(
+            vocab_jsd_threshold=args.vocab_threshold,
+            sentiment_threshold=args.sentiment_threshold,
+        )
+
     # Create and run
     runtime = create_experiment(
         db=db,
@@ -104,13 +120,17 @@ async def main():
         description=config.get("description", ""),
         probe_mode=args.probe,
         probe_interval=args.probe_interval,
+        probe_strategy=args.probe_strategy,
+        trigger_config=trigger_config,
     )
 
     print(f"\nSENTINEL Experiment: {config['name']}")
     print(f"Agents: {len(agent_configs)} | Topology: {config.get('topology', 'full_mesh')}")
     print(f"Max turns: {max_turns or 'unlimited'} | Delay: {cycle_delay}s")
     if args.probe:
-        print(f"Probes: {args.probe} every {args.probe_interval} turns")
+        print(f"Probes: {args.probe} | strategy: {args.probe_strategy} | interval: {args.probe_interval} turns")
+        if args.probe_strategy in ("triggered", "hybrid"):
+            print(f"  Thresholds: vocab_jsd={args.vocab_threshold}, sentiment={args.sentiment_threshold}")
     print(f"Database: {args.db}")
     print(f"\nPress Ctrl+C to stop gracefully.\n")
 
