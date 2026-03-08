@@ -1,0 +1,83 @@
+.TH SENTINEL-MATRIX 1 "2026-03-08" "SENTINEL 0.1.0" "SENTINEL Manual"
+.SH NAME
+sentinel-matrix \- run experiments across multiple model configurations
+.SH SYNOPSIS
+.B python3 run_matrix.py
+.I config
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+Runs the same experiment configuration across multiple model combinations.
+Three matrix modes control how models are assigned to agents:
+.PP
+.RS
+.TP
+.B homogeneous
+All agents use the same model. One experiment per available model.
+E.g., 3 models = 3 experiments.
+.TP
+.B asymmetric
+One agent uses a different model from the rest. Tests whether a single
+different model changes group dynamics. E.g., 3 agents x 2 models =
+6 experiments.
+.TP
+.B mixed
+Full combinatorial assignment of models to agents. Explores all possible
+heterogeneous configurations. E.g., 3 agents x 2 models = 8 experiments.
+.RE
+.PP
+After each experiment, metrics are computed automatically (unless skipped).
+.SH ARGUMENTS
+.TP
+.I config
+Path to base experiment config JSON. Agent definitions are used as
+templates; the model field is overridden by the matrix.
+.SH OPTIONS
+.TP
+.BI \-\-mode " MODE"
+Matrix mode: homogeneous, asymmetric, or mixed. Default: homogeneous.
+.TP
+.BI \-\-models " LIST"
+Comma-separated list of model names. Default: all models available in
+Ollama.
+.TP
+.BI \-\-max\-turns " N"
+Max turns per experiment.
+.TP
+.BI \-\-delay " SECONDS"
+Delay between turns.
+.TP
+.B \-\-preview
+Show the matrix of planned experiments without running them.
+.TP
+.B \-\-skip\-metrics
+Skip metrics computation after each experiment.
+.TP
+.BI \-\-db " PATH"
+Database path. Default:
+.IR experiments/sentinel.db .
+.TP
+.BI \-\-log\-level " LEVEL"
+Logging level. Default: INFO.
+.SH EXAMPLES
+Preview homogeneous matrix:
+.PP
+.RS
+python3 run_matrix.py config/three_agent_mesh.json \-\-preview
+.RE
+.PP
+Run homogeneous experiments across all models:
+.PP
+.RS
+python3 run_matrix.py config/three_agent_mesh.json \-\-max-turns 50
+.RE
+.PP
+Run asymmetric experiments with specific models:
+.PP
+.RS
+python3 run_matrix.py config/three_agent_mesh.json \\
+    \-\-mode asymmetric \-\-models gemma2:2b,llama3:latest \\
+    \-\-max-turns 50
+.RE
+.SH SEE ALSO
+.BR sentinel-experiment (1),
+.BR sentinel-models (1)

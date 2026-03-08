@@ -1,0 +1,58 @@
+.TH SENTINEL-CALIBRATION 1 "2026-03-08" "SENTINEL 0.1.0" "SENTINEL Manual"
+.SH NAME
+sentinel-calibration \- run the calibration battery for SENTINEL agents
+.SH SYNOPSIS
+.B python3 run_calibration.py
+.I config
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+Runs the standardized calibration battery against all agents defined in the
+experiment config. The battery consists of 21 prompts across 7 categories,
+executed N times per agent to establish behavioral baselines.
+.PP
+Calibration baselines are used by probes and metrics to measure drift.
+Each agent's calibration is stored with a unique ID and linked to the
+agent record. Running calibration before experiments is recommended but
+not required \(em metrics and probes degrade gracefully without baselines.
+.PP
+Categories: persona_adherence, semantic_consistency, reasoning_patterns,
+sentiment_range, instruction_compliance, vocabulary_profile,
+ethical_reasoning.
+.SH ARGUMENTS
+.TP
+.I config
+Path to experiment configuration JSON file defining the agents to calibrate.
+.SH OPTIONS
+.TP
+.BI \-\-runs " N"
+Number of calibration runs per agent. Default: 3. Multiple runs enable
+test-retest reliability validation. More runs = better baselines but
+longer execution time.
+.TP
+.BI \-\-db " PATH"
+Path to SQLite database. Default:
+.IR experiments/sentinel.db .
+.TP
+.BI \-\-log\-level " LEVEL"
+Logging level. Default: INFO.
+.SH EXAMPLES
+Standard 3-run calibration:
+.PP
+.RS
+python3 run_calibration.py config/three_agent_mesh.json
+.RE
+.PP
+Quick single-run calibration:
+.PP
+.RS
+python3 run_calibration.py config/three_agent_mesh.json \-\-runs 1
+.RE
+.PP
+5-run calibration for higher reliability:
+.PP
+.RS
+python3 run_calibration.py config/three_agent_mesh.json \-\-runs 5
+.RE
+.SH SEE ALSO
+.BR sentinel-experiment (1),
+.BR sentinel-metrics (1)

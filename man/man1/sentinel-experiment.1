@@ -1,0 +1,144 @@
+.TH SENTINEL-EXPERIMENT 1 "2026-03-08" "SENTINEL 0.1.0" "SENTINEL Manual"
+.SH NAME
+sentinel-experiment \- run a SENTINEL multi-agent interaction experiment
+.SH SYNOPSIS
+.B python3 run_experiment.py
+.I config
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+Runs a multi-agent experiment with configurable topology, timing, and
+optional real-time probe monitoring. Agents interact in round-robin order
+within the configured topology (currently full_mesh). Each agent sees all
+public messages from other agents and generates responses via Ollama.
+.PP
+All messages, prompts, timings, and model digests are logged to SQLite for
+post-hoc analysis. Experiments can be stopped gracefully with Ctrl+C
+(SIGINT) and will complete the current turn before exiting.
+.SH ARGUMENTS
+.TP
+.I config
+Path to experiment configuration JSON file. See
+.BR sentinel-config (5)
+for format details.
+.SH OPTIONS
+.TP
+.BI \-\-max\-turns " N"
+Maximum number of interaction turns. Overrides the config file value.
+When reached, the experiment stops gracefully.
+.TP
+.BI \-\-delay " SECONDS"
+Delay in seconds between agent turns. Overrides config
+.IR cycle_delay_s .
+Default: value from config (typically 10-30s).
+.TP
+.BI \-\-probe " MODE"
+Enable real-time probe monitoring. Modes:
+.RS
+.TP
+.B shadow
+Probes run as separate API calls. Responses are logged but never enter the
+conversation history. No experiment contamination. This is the recommended
+default.
+.TP
+.B injected
+Probes are sent as visible messages in the conversation. The agent's
+response becomes part of the interaction history. This deliberately alters
+the experiment and must be used as a controlled variable.
+.TP
+.B both
+Runs shadow AND injected probes at the same turn. Enables direct comparison
+of whether mid-conversation persona reminders affect drift differently than
+passive observation.
+.RE
+.TP
+.BI \-\-probe\-interval " N"
+Run probes every N turns per agent. Default: 20. For hybrid/triggered
+strategies, this sets the scheduled interval; triggered probes may fire
+more frequently.
+.TP
+.BI \-\-probe\-strategy " STRATEGY"
+Probe trigger strategy:
+.RS
+.TP
+.B scheduled
+Probes fire at fixed intervals (every N turns). Default.
+.TP
+.B triggered
+Probes fire only when lightweight drift metrics cross thresholds.
+Vocabulary drift (JSD) and sentiment shift are computed after every turn
+using stdlib only \(em no Ollama call. When a threshold is crossed, the
+expensive shadow/injected probe fires.
+.TP
+.B hybrid
+Scheduled probes at the configured interval plus triggered probes on
+threshold crossings. Provides guaranteed baseline coverage with
+high-resolution data when drift is actively happening.
+.RE
+.TP
+.BI \-\-vocab\-threshold " FLOAT"
+Vocabulary Jensen-Shannon divergence threshold for triggered probes.
+Range [0, 1]. Default: 0.15.
+.TP
+.BI \-\-sentiment\-threshold " FLOAT"
+Sentiment delta threshold for triggered probes. Absolute change from
+baseline. Default: 0.3.
+.TP
+.BI \-\-db " PATH"
+Path to SQLite database file. Default:
+.IR experiments/sentinel.db .
+Created automatically if it does not exist.
+.TP
+.BI \-\-log\-level " LEVEL"
+Python logging level. Default: INFO. Use DEBUG for verbose output
+including probe details.
+.SH EXAMPLES
+Run a basic experiment:
+.PP
+.RS
+python3 run_experiment.py config/three_agent_mesh.json
+.RE
+.PP
+Run 100 turns with 5-second delay:
+.PP
+.RS
+python3 run_experiment.py config/three_agent_mesh.json \\
+    \-\-max-turns 100 \-\-delay 5
+.RE
+.PP
+Run with hybrid probes (scheduled every 20 turns + triggered on drift):
+.PP
+.RS
+python3 run_experiment.py config/three_agent_mesh.json \\
+    \-\-probe shadow \-\-probe-strategy hybrid \\
+    \-\-probe-interval 20 \-\-max-turns 200
+.RE
+.PP
+Run with triggered-only probes and custom thresholds:
+.PP
+.RS
+python3 run_experiment.py config/three_agent_mesh.json \\
+    \-\-probe shadow \-\-probe-strategy triggered \\
+    \-\-vocab-threshold 0.12 \-\-sentiment-threshold 0.25 \\
+    \-\-max-turns 200 \-\-delay 5
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Experiment completed successfully or stopped gracefully via Ctrl+C.
+.TP
+.B 1
+Error: config file not found, Ollama not running, or invalid arguments.
+.SH FILES
+.TP
+.I experiments/sentinel.db
+Default SQLite database. Contains experiments, agents, messages, probes,
+calibrations, and metrics tables.
+.TP
+.I config/*.json
+Experiment configuration files.
+.SH SEE ALSO
+.BR sentinel-calibration (1),
+.BR sentinel-metrics (1),
+.BR sentinel-paired (1),
+.BR sentinel-fork (1),
+.BR sentinel-matrix (1)

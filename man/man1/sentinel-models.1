@@ -1,0 +1,37 @@
+.TH SENTINEL-MODELS 1 "2026-03-08" "SENTINEL 0.1.0" "SENTINEL Manual"
+.SH NAME
+sentinel-models \- list available Ollama models and preview model matrices
+.SH SYNOPSIS
+.B python3 list_models.py
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+Lists all models available in the local Ollama instance with their sizes
+and digests. Optionally generates a model matrix preview showing how
+models would be assigned to agents for matrix experiments.
+.SH OPTIONS
+.TP
+.BI \-\-matrix " CONFIG"
+Path to experiment config JSON. When provided, generates a model matrix
+preview showing agent-to-model assignments.
+.TP
+.BI \-\-mode " MODE"
+Matrix mode for preview: homogeneous, asymmetric, or mixed.
+Default: homogeneous.
+.TP
+.BI \-\-models " LIST"
+Comma-separated model names to include. Default: all available.
+.SH EXAMPLES
+List all available models:
+.PP
+.RS
+python3 list_models.py
+.RE
+.PP
+Preview asymmetric matrix:
+.PP
+.RS
+python3 list_models.py \-\-matrix config/three_agent_mesh.json \\
+    \-\-mode asymmetric
+.RE
+.SH SEE ALSO
+.BR sentinel-matrix (1)
