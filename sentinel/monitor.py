@@ -227,6 +227,7 @@ def run_monitor(db: Database, experiment_id: str, refresh_interval: float = 3.0)
         raise ValueError(f"Experiment not found: {experiment_id}")
 
     def draw(stdscr):
+        nonlocal refresh_interval
         curses.curs_set(0)  # Hide cursor
         curses.use_default_colors()
 

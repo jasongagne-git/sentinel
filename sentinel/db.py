@@ -84,10 +84,32 @@ CREATE TABLE IF NOT EXISTS calibrations (
     FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
 );
 
+CREATE TABLE IF NOT EXISTS probes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    probe_mode TEXT NOT NULL,
+    at_turn INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    response TEXT NOT NULL,
+    inference_ms INTEGER NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    baseline_response TEXT,
+    drift_score REAL,
+    trigger_reason TEXT NOT NULL DEFAULT 'scheduled',
+    trigger_details TEXT,
+    timestamp TEXT NOT NULL,
+    FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id),
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_experiment ON messages(experiment_id, interaction_turn);
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, interaction_turn);
 CREATE INDEX IF NOT EXISTS idx_agents_experiment ON agents(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_calibrations_agent ON calibrations(agent_id);
+CREATE INDEX IF NOT EXISTS idx_probes_experiment_agent ON probes(experiment_id, agent_id, at_turn);
 """
 
 
