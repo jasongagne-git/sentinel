@@ -39,5 +39,14 @@
             "mutate": ["Beck:disposition=skeptical"],
             "model": "gemma2:2b"
         }
-    ]
+    ],
+    "post_batch": {
+        "analyze_each": true,
+        "auto_findings": true,
+        "comparisons": [
+            {"type": "cross-model", "a": "gemma-baseline", "b": "llama-baseline"},
+            {"type": "paired", "label": "paired-gemma"},
+            {"type": "fork", "a": "gemma-baseline", "b": "fork-skeptical"}
+        ]
+    }
 }

@@ -1,0 +1,142 @@
+{
+    "name": "Milestone 5: Multi-Model & Fork Experiments",
+    "description": "Extended path-dependence and mutation testing. Multiple fork points, multiple mutations, cross-model forks, paired llama3.2 control arm.",
+    "defaults": {
+        "max_turns": 500,
+        "delay": 5,
+        "probe": "both",
+        "probe_strategy": "hybrid",
+        "probe_interval": 20,
+        "vocab_threshold": 0.12,
+        "sentiment_threshold": 0.25,
+        "metrics": "fast",
+        "metrics_window": 50
+    },
+    "runs": [
+        {
+            "label": "gemma-baseline",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "llama-baseline",
+            "type": "experiment",
+            "config": "config/long_run_llama3.json",
+            "model": "llama3.2:3b"
+        },
+        {
+            "label": "paired-llama",
+            "type": "paired",
+            "config": "config/long_run_llama3.json",
+            "model": "llama3.2:3b"
+        },
+        {
+            "label": "fork-t25-beck-skeptical",
+            "type": "fork",
+            "source_label": "gemma-baseline",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-t100-beck-skeptical",
+            "type": "fork",
+            "source_label": "gemma-baseline",
+            "at_turn": 100,
+            "mutate": ["Beck:disposition=skeptical"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-t25-aria-contrarian",
+            "type": "fork",
+            "source_label": "gemma-baseline",
+            "at_turn": 25,
+            "mutate": ["Aria:disposition=contrarian"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-t25-cass-optimistic",
+            "type": "fork",
+            "source_label": "gemma-baseline",
+            "at_turn": 25,
+            "mutate": ["Cass:disposition=optimistic"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-t25-double-mutation",
+            "type": "fork",
+            "source_label": "gemma-baseline",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical", "Aria:disposition=contrarian"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-t25-llama-beck-skeptical",
+            "type": "fork",
+            "source_label": "llama-baseline",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical"],
+            "model": "llama3.2:3b"
+        }
+    ],
+    "post_batch": {
+        "analyze_each": true,
+        "auto_findings": true,
+        "comparisons": [
+            {
+                "type": "cross-model",
+                "a": "gemma-baseline",
+                "b": "llama-baseline",
+                "note": "Same agents, different models"
+            },
+            {
+                "type": "paired",
+                "label": "paired-llama",
+                "note": "llama3.2 interaction vs isolation"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-baseline",
+                "b": "fork-t25-beck-skeptical",
+                "note": "Beck skeptical at t25 (replication of M4r)"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-baseline",
+                "b": "fork-t100-beck-skeptical",
+                "note": "Beck skeptical at t100 — later fork point"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-baseline",
+                "b": "fork-t25-aria-contrarian",
+                "note": "Which agent mutation causes most cascade?"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-baseline",
+                "b": "fork-t25-cass-optimistic",
+                "note": "Which agent mutation causes most cascade?"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-baseline",
+                "b": "fork-t25-double-mutation",
+                "note": "Two mutations at once — additive or emergent?"
+            },
+            {
+                "type": "fork",
+                "a": "fork-t25-beck-skeptical",
+                "b": "fork-t100-beck-skeptical",
+                "note": "Same mutation, different timing — path dependence"
+            },
+            {
+                "type": "cross-model",
+                "a": "fork-t25-beck-skeptical",
+                "b": "fork-t25-llama-beck-skeptical",
+                "note": "Same mutation, different model — model sensitivity"
+            }
+        ]
+    }
+}

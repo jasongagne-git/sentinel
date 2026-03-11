@@ -37,6 +37,9 @@ from sentinel.probes import TriggerConfig
 from sentinel.runtime import ExperimentRuntime, create_experiment
 from sentinel.thermal import ThermalGuard
 
+# Lazy imports for post-batch analysis (avoid circular at module level)
+# from run_analyze import auto_analyze_and_save  # imported in run_post_batch_analysis()
+
 log = logging.getLogger("sentinel.batch")
 
 
@@ -110,11 +113,20 @@ def update_status(log_dir: Path, msg: str):
 
 # ── Ollama orchestration ──────────────────────────────────────────
 
-KNOWN_MODELS = ["gemma2:2b", "llama3.2:3b", "phi3:mini"]
+# Populated dynamically from Ollama on startup; used for unloading between runs.
+KNOWN_MODELS = []
 
 
 def unload_models(client: OllamaClient):
     """Unload all models from VRAM."""
+    global KNOWN_MODELS
+    # Populate dynamically if not already set by pre-flight check
+    if not KNOWN_MODELS:
+        try:
+            from sentinel.models import discover_models
+            KNOWN_MODELS = [m.name for m in discover_models(client)]
+        except Exception:
+            KNOWN_MODELS = ["gemma2:2b", "llama3.2:3b", "phi3:mini"]  # last-resort fallback
     log.info("Unloading models from VRAM...")
     for model in KNOWN_MODELS:
         try:
@@ -526,6 +538,132 @@ def run_post_metrics(db: Database, client: OllamaClient, experiment_id: str, mer
         log.error("Metrics failed for %s: %s", experiment_id[:8], exc)
 
 
+# ── Post-batch analysis ───────────────────────────────────────────
+
+def run_post_batch_analysis(
+    db: Database, state: dict, batch_config: dict, log_dir: Path,
+):
+    """Run diff → analyze → auto-findings for all configured comparisons.
+
+    The batch config can include a "post_batch" section:
+    {
+        "post_batch": {
+            "analyze_each": true,       // analyze each experiment individually
+            "auto_findings": true,      // auto-generate findings (vs templates)
+            "comparisons": [
+                {"type": "cross-model", "a": "gemma-baseline", "b": "llama-baseline"},
+                {"type": "paired", "label": "paired-gemma"},
+                {"type": "fork", "a": "gemma-baseline", "b": "fork-skeptical"},
+            ]
+        }
+    }
+    """
+    from run_analyze import auto_analyze_and_save, analyze_single, analyze_comparison, print_report
+
+    post = batch_config.get("post_batch")
+    if not post:
+        return
+
+    log.info("")
+    log.info("=" * 50)
+    log.info("POST-BATCH ANALYSIS")
+    log.info("=" * 50)
+    update_status(log_dir, "Post-batch analysis — starting")
+
+    auto_findings = post.get("auto_findings", True)
+    runs_state = state.get("runs", {})
+
+    def get_exp_id(label: str) -> str | None:
+        rs = runs_state.get(label, {})
+        return rs.get("experiment_id") if rs.get("status") == "completed" else None
+
+    # Individual experiment analysis
+    if post.get("analyze_each", False):
+        log.info("")
+        log.info("─── Analyzing individual experiments ───")
+        for label, rs in runs_state.items():
+            if rs.get("status") != "completed" or not rs.get("experiment_id"):
+                continue
+            exp_id = rs["experiment_id"]
+            try:
+                log.info("Analyzing %s (%s)...", label, exp_id[:8])
+                auto_analyze_and_save(db, [exp_id], auto_finding=auto_findings, quiet=True)
+                log.info("  Analysis complete for %s", label)
+
+                # Also analyze control arm if this was a paired run
+                ctrl_id = rs.get("ctrl_id")
+                if ctrl_id:
+                    log.info("Analyzing control arm for %s (%s)...", label, ctrl_id[:8])
+                    auto_analyze_and_save(db, [ctrl_id], auto_finding=auto_findings, quiet=True)
+            except Exception as exc:
+                log.error("Analysis failed for %s: %s", label, exc)
+
+    # Comparison analysis
+    comparisons = post.get("comparisons", [])
+    if comparisons:
+        log.info("")
+        log.info("─── Running comparison analyses ───")
+
+    for comp in comparisons:
+        comp_type = comp.get("type", "unknown")
+        try:
+            if comp_type == "paired":
+                # Paired: compare experimental vs control from the same run
+                label = comp.get("label") or comp.get("a")
+                if not label:
+                    log.warning("Paired comparison missing 'label': %s", comp)
+                    continue
+                exp_id = get_exp_id(label)
+                ctrl_id = runs_state.get(label, {}).get("ctrl_id")
+                if not exp_id or not ctrl_id:
+                    log.warning("Paired comparison skipped — missing IDs for %s", label)
+                    continue
+                log.info("Paired diff: %s exp=%s ctrl=%s", label, exp_id[:8], ctrl_id[:8])
+                auto_analyze_and_save(db, [exp_id, ctrl_id], auto_finding=auto_findings, quiet=True)
+                log.info("  Paired analysis complete")
+
+            elif comp_type == "fork":
+                # Fork: compare source vs fork
+                a_label = comp.get("a")
+                b_label = comp.get("b")
+                if not a_label or not b_label:
+                    log.warning("Fork comparison missing 'a' or 'b': %s", comp)
+                    continue
+                a_id = get_exp_id(a_label)
+                b_id = get_exp_id(b_label)
+                if not a_id or not b_id:
+                    log.warning("Fork comparison skipped — missing IDs (a=%s, b=%s)", a_label, b_label)
+                    continue
+                log.info("Fork diff: %s (%s) vs %s (%s)", a_label, a_id[:8], b_label, b_id[:8])
+                auto_analyze_and_save(db, [a_id, b_id], auto_finding=auto_findings, quiet=True)
+                log.info("  Fork analysis complete")
+
+            elif comp_type in ("cross-model", "comparison"):
+                # Generic comparison: diff A vs B by label
+                a_label = comp.get("a")
+                b_label = comp.get("b")
+                if not a_label or not b_label:
+                    log.warning("Comparison missing 'a' or 'b': %s", comp)
+                    continue
+                a_id = get_exp_id(a_label)
+                b_id = get_exp_id(b_label)
+                if not a_id or not b_id:
+                    log.warning("Comparison skipped — missing IDs (a=%s, b=%s)", a_label, b_label)
+                    continue
+                log.info("Cross-model diff: %s (%s) vs %s (%s)", a_label, a_id[:8], b_label, b_id[:8])
+                auto_analyze_and_save(db, [a_id, b_id], auto_finding=auto_findings, quiet=True)
+                log.info("  Cross-model analysis complete")
+
+            else:
+                log.warning("Unknown comparison type: %s", comp_type)
+
+        except Exception as exc:
+            log.error("Comparison analysis failed (%s): %s", comp, exc)
+
+    update_status(log_dir, "Post-batch analysis — complete")
+    log.info("Post-batch analysis complete")
+
+
 # ── Main ──────────────────────────────────────────────────────────
 
 async def main():
@@ -577,6 +715,49 @@ async def main():
             if not Path(run_def["config"]).exists():
                 print(f"Error: config not found: {run_def['config']}", file=sys.stderr)
                 sys.exit(1)
+
+    # Pre-flight model compatibility check
+    from sentinel.models import (
+        get_system_specs, get_compatible_models, discover_models,
+        check_model_compatibility,
+    )
+    client = OllamaClient()
+    if client.is_available():
+        specs = get_system_specs()
+        compatibilities = get_compatible_models(client, specs)
+        compat_map = {c.model.name: c for c in compatibilities}
+        # Populate KNOWN_MODELS from discovered models
+        global KNOWN_MODELS
+        KNOWN_MODELS = [c.model.name for c in compatibilities]
+
+        # Check each run's model
+        batch_models = set()
+        for run_def in runs:
+            model = run_def.get("model", defaults.get("model", "gemma2:2b"))
+            batch_models.add(model)
+
+        bad_models = []
+        for model in sorted(batch_models):
+            c = compat_map.get(model)
+            if c is None:
+                bad_models.append((model, "not found in Ollama — pull it first"))
+            elif not c.fits:
+                bad_models.append((model, c.reason))
+
+        if bad_models:
+            print(f"\nModel compatibility issues on {specs.gpu_name}:", file=sys.stderr)
+            print(f"  Available VRAM: {specs.max_model_vram_gb} GB", file=sys.stderr)
+            for model, reason in bad_models:
+                print(f"  [NO] {model}: {reason}", file=sys.stderr)
+            print(f"\nRun 'python3 list_models.py' to see compatible models.", file=sys.stderr)
+            sys.exit(1)
+
+        # Warn about tight fits
+        for model in sorted(batch_models):
+            c = compat_map.get(model)
+            if c and c.fits and c.margin_gb < 0.5:
+                print(f"  Warning: {model} is a tight fit ({c.margin_gb:+.1f} GB headroom)",
+                      file=sys.stderr)
 
     # Dry run
     if args.dry_run:
@@ -773,6 +954,13 @@ async def main():
             # Remove per-run log handler
             logging.getLogger().removeHandler(run_fh)
             run_fh.close()
+
+        # Post-batch analysis pipeline (diff → analyze → findings)
+        if batch_config.get("post_batch"):
+            try:
+                run_post_batch_analysis(db, state, batch_config, log_dir)
+            except Exception as exc:
+                log.error("Post-batch analysis failed: %s", exc, exc_info=True)
 
     finally:
         db.close()
