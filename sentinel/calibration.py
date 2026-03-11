@@ -189,6 +189,8 @@ async def run_calibration(
 
     agent = Agent(agent_id, agent_config, client, model_digest)
 
+    errors = 0
+
     for run in range(1, num_runs + 1):
         log.info("Calibration run %d/%d for %s", run, num_runs, agent_config.name)
 
@@ -200,13 +202,22 @@ async def run_calibration(
                     {"role": "user", "content": prompt_def["prompt"]},
                 ]
 
-                result = await asyncio.to_thread(
-                    client.chat,
-                    model=agent_config.model,
-                    messages=messages,
-                    temperature=agent_config.temperature,
-                    num_predict=agent_config.response_limit,
-                )
+                try:
+                    result = await asyncio.to_thread(
+                        client.chat,
+                        model=agent_config.model,
+                        messages=messages,
+                        temperature=agent_config.temperature,
+                        num_predict=agent_config.response_limit,
+                    )
+                except Exception as exc:
+                    errors += 1
+                    log.error(
+                        "Calibration error for %s run %d %s/%s: %s",
+                        agent_config.name, run, category, prompt_def["id"], exc,
+                    )
+                    completed += 1
+                    continue
 
                 db.store_calibration(
                     calibration_id=calibration_id,
@@ -234,7 +245,13 @@ async def run_calibration(
                         progress=(completed, total_prompts),
                     )
 
-    log.info("Calibration complete for %s — ID: %s", agent_config.name, calibration_id[:8])
+    if errors:
+        log.warning(
+            "Calibration for %s finished with %d/%d errors — ID: %s",
+            agent_config.name, errors, total_prompts, calibration_id[:8],
+        )
+    else:
+        log.info("Calibration complete for %s — ID: %s", agent_config.name, calibration_id[:8])
     return calibration_id
 
 
@@ -277,23 +294,29 @@ async def calibrate_all_agents(
                     f"{done}/{total} ({100*done//total}%)"
                 )
 
-        cal_id = await run_calibration(
-            db=db,
-            client=client,
-            agent_config=config,
-            experiment_id=experiment_id,
-            agent_id=agent_id,
-            model_digest=digest,
-            num_runs=num_runs,
-            on_result=on_result,
-        )
-        calibration_ids[agent_id] = cal_id
+        try:
+            cal_id = await run_calibration(
+                db=db,
+                client=client,
+                agent_config=config,
+                experiment_id=experiment_id,
+                agent_id=agent_id,
+                model_digest=digest,
+                num_runs=num_runs,
+                on_result=on_result,
+            )
+            calibration_ids[agent_id] = cal_id
 
-        # Update agent record with calibration_id
-        db.conn.execute(
-            "UPDATE agents SET calibration_id=? WHERE agent_id=?",
-            (cal_id, agent_id),
-        )
-        db.conn.commit()
+            # Update agent record with calibration_id
+            db.conn.execute(
+                "UPDATE agents SET calibration_id=? WHERE agent_id=?",
+                (cal_id, agent_id),
+            )
+            db.conn.commit()
+        except Exception as exc:
+            log.error(
+                "Calibration failed for agent %s (%s): %s — continuing with remaining agents",
+                config.name, agent_id[:8], exc,
+            )
 
     return calibration_ids

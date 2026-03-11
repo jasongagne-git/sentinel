@@ -185,6 +185,7 @@ class Database:
         traits_json: Optional[str] = None,
         trait_fingerprint: Optional[str] = None,
         forked_from_agent_id: Optional[str] = None,
+        calibration_id: Optional[str] = None,
     ) -> str:
         import json
 
@@ -203,14 +204,38 @@ class Database:
             """INSERT INTO agents
                (agent_id, experiment_id, name, system_prompt, model, model_digest,
                 temperature, max_history, response_limit, is_control, config_json,
-                traits_json, trait_fingerprint, forked_from_agent_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                traits_json, trait_fingerprint, forked_from_agent_id, calibration_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (agent_id, experiment_id, name, system_prompt, model, model_digest,
              temperature, max_history, response_limit, int(is_control), json.dumps(config),
-             traits_json, trait_fingerprint, forked_from_agent_id),
+             traits_json, trait_fingerprint, forked_from_agent_id, calibration_id),
         )
         self.conn.commit()
         return agent_id
+
+    def find_calibration_id(
+        self,
+        name: str,
+        model: str,
+        model_digest: str,
+    ) -> Optional[str]:
+        """Find the most recent calibration_id for an agent name + model + digest.
+
+        Looks up prior agents with the same name, model, and model_digest that
+        have a calibration_id set, and returns the most recent one.
+        """
+        row = self.conn.execute(
+            """SELECT a.calibration_id
+               FROM agents a
+               JOIN calibrations c ON a.calibration_id = c.calibration_id
+               WHERE a.name = ? AND a.model = ? AND a.model_digest = ?
+                 AND a.calibration_id IS NOT NULL
+               GROUP BY a.calibration_id
+               ORDER BY MAX(c.timestamp) DESC
+               LIMIT 1""",
+            (name, model, model_digest),
+        ).fetchone()
+        return row["calibration_id"] if row else None
 
     def get_agents(self, experiment_id: str) -> list[dict]:
         rows = self.conn.execute(

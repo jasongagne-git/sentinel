@@ -1,0 +1,43 @@
+{
+    "name": "Milestone 4 Rerun",
+    "description": "Multi-pronged probe methodology baseline — gemma2:2b, llama3.2:3b, paired, fork",
+    "defaults": {
+        "max_turns": 500,
+        "delay": 5,
+        "probe": "both",
+        "probe_strategy": "hybrid",
+        "probe_interval": 20,
+        "vocab_threshold": 0.12,
+        "sentiment_threshold": 0.25,
+        "metrics": "fast",
+        "metrics_window": 50
+    },
+    "runs": [
+        {
+            "label": "gemma-baseline",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "llama-baseline",
+            "type": "experiment",
+            "config": "config/long_run_llama3.json",
+            "model": "llama3.2:3b"
+        },
+        {
+            "label": "paired-gemma",
+            "type": "paired",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-skeptical",
+            "type": "fork",
+            "source_label": "gemma-baseline",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical"],
+            "model": "gemma2:2b"
+        }
+    ]
+}

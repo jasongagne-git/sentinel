@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -59,7 +60,7 @@ async def main():
         agent_configs.append(AgentConfig(
             name=name,
             system_prompt=system_prompt,
-            model=agent_def.get("model", config.get("default_model", "llama3:latest")),
+            model=agent_def.get("model", config.get("default_model", "llama3.2:3b")),
             temperature=agent_def.get("temperature", config.get("default_temperature", 0.7)),
             max_history=agent_def.get("max_history", config.get("default_max_history", 50)),
             response_limit=agent_def.get("response_limit", config.get("default_response_limit", 256)),
@@ -103,6 +104,8 @@ async def main():
     async def on_progress(msg):
         print(msg)
 
+    db.update_experiment_status(experiment_id, "running")
+
     calibration_ids = await calibrate_all_agents(
         db=db,
         client=client,
@@ -113,6 +116,8 @@ async def main():
         num_runs=args.runs,
         on_progress=on_progress,
     )
+
+    db.update_experiment_status(experiment_id, "completed")
 
     print(f"\nCalibration complete.")
     for agent_id, cal_id in calibration_ids.items():
@@ -126,4 +131,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     asyncio.run(main())

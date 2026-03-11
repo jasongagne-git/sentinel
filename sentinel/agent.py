@@ -11,7 +11,7 @@ class AgentConfig:
     """Configuration for a SENTINEL agent."""
     name: str
     system_prompt: str
-    model: str = "llama3:latest"
+    model: str = "llama3.2:3b"
     temperature: float = 0.7
     max_history: int = 50
     response_limit: int = 256

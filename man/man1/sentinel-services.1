@@ -1,0 +1,125 @@
+.TH SENTINEL-SERVICES 1 "2026-03-10" "SENTINEL" "SENTINEL Manual"
+.SH NAME
+sentinel-services \- audit and manage system services for model inference
+.SH SYNOPSIS
+.B check_services.sh
+.RB [ \-\-report | \-\-stop | \-\-disable | \-\-enable | \-\-init ]
+.RB [ \-\-keep
+.IR SVC[,SVC] ]
+.RB [ \-\-min\-mb
+.IR MB ]
+.RB [ \-\-quiet ]
+.RB [ \-\-yes ]
+.SH DESCRIPTION
+Audits running system services and identifies those consuming memory
+that could be reclaimed for model inference. All behavior is driven
+by user-editable configuration files \(em the script will not stop
+any services without explicit configuration.
+.PP
+Integrated into SENTINEL pre-flight checks: experiment scripts
+automatically call this before loading large models (e.g., llama3
+at ~4.2 GB VRAM on an 8 GB unified-memory Jetson).
+.SH OPTIONS
+.TP
+.B \-\-report
+Show a table of stoppable services and reclaimable memory (default).
+.TP
+.B \-\-stop
+Stop services listed in services.conf (current session only).
+They will restart on next boot.
+.TP
+.B \-\-disable
+Stop services AND disable them from starting on boot.
+Reverse with
+.BR \-\-enable .
+.TP
+.B \-\-enable
+Re-enable and start all previously disabled managed services.
+.TP
+.B \-\-init
+Generate default configuration files in ~/.config/sentinel/.
+Will not overwrite existing files.
+.TP
+.BI \-\-keep " SVC[,SVC,...]"
+Comma-separated list of services to exclude. Additive with
+keep-services.conf entries. Service names can omit .service suffix.
+.TP
+.BI \-\-min\-mb " MB"
+Only report services using at least
+.I MB
+megabytes of RSS (default: 1).
+.TP
+.B \-\-quiet
+Machine-readable output. For \-\-report, prints only the total
+reclaimable MB.
+.TP
+.B \-\-yes
+Skip confirmation prompts for \-\-stop and \-\-disable.
+.SH CONFIGURATION
+All service management is driven by two config files. Run
+.B check_services.sh \-\-init
+to generate them with documented defaults.
+.SS services.conf
+Lists services that SENTINEL may stop to free memory.
+Only uncommented entries are active. The script refuses to
+stop or disable anything if this file does not exist.
+.PP
+.RS
+.nf
+# Format: service_name  # optional description
+docker         # Docker container runtime
+containerd     # Container runtime (Docker dependency)
+bluetooth      # Bluetooth support
+# smbd         # Samba \(em commented out = not managed
+.fi
+.RE
+.SS keep-services.conf
+Lists services to NEVER stop, even if they appear in
+services.conf. Use this to protect services you need.
+.PP
+.RS
+.nf
+# Keep Samba for LAN file access
+smbd
+nmbd
+.fi
+.RE
+.PP
+The
+.B \-\-keep
+flag adds to this list for a single invocation.
+.SH ENVIRONMENT
+.TP
+.B SENTINEL_CONF_DIR
+Override the config directory (default: ~/.config/sentinel/).
+.SH INTEGRATION
+The script can be sourced by other SENTINEL scripts:
+.PP
+.RS
+.nf
+source ./check_services.sh \-\-source\-only
+preflight_memory_check 4200 || stop_services
+.fi
+.RE
+.PP
+.B recover_ollama.sh
+automatically calls
+.B free_memory_for_model
+as Level 0 of its recovery sequence, before attempting model loads.
+.SH FILES
+.TP
+.I ~/.config/sentinel/services.conf
+Services to manage (stop/disable candidates).
+.TP
+.I ~/.config/sentinel/keep-services.conf
+Services to never stop (exclusion list).
+.TP
+.I check_services.sh
+Main service auditor script.
+.TP
+.I recover_ollama.sh
+Ollama recovery framework (sources check_services.sh).
+.SH SEE ALSO
+.BR sentinel-experiment (1),
+.BR sentinel-calibration (1),
+.BR systemctl (1)

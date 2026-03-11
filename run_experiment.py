@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -91,7 +92,7 @@ async def main():
         agent_configs.append(AgentConfig(
             name=name,
             system_prompt=system_prompt,
-            model=agent_def.get("model", config.get("default_model", "llama3:latest")),
+            model=agent_def.get("model", config.get("default_model", "llama3.2:3b")),
             temperature=agent_def.get("temperature", config.get("default_temperature", 0.7)),
             max_history=agent_def.get("max_history", config.get("default_max_history", 50)),
             response_limit=agent_def.get("response_limit", config.get("default_response_limit", 256)),
@@ -147,4 +148,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     asyncio.run(main())

@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import sys
 
 from sentinel.db import Database
@@ -170,22 +171,29 @@ async def main():
         print(f"    turn {turn:3d} | {agent_name}: {preview}...")
 
     print(f"Running fork for {max_turns} turns...\n")
-    await fork_runtime.run(
-        max_turns=max_turns,
-        cycle_delay_s=args.delay,
-        on_message=on_message,
-    )
+    try:
+        await fork_runtime.run(
+            max_turns=max_turns,
+            cycle_delay_s=args.delay,
+            on_message=on_message,
+        )
+    except Exception as exc:
+        logging.getLogger("sentinel.fork").error("Fork run failed: %s", exc)
+        print(f"\nERROR: Fork run failed: {exc}", file=sys.stderr)
 
     fork_id = fork_runtime.experiment_id
 
     if not args.skip_metrics:
         print(f"\nComputing metrics...")
-        metrics_config = MetricsConfig(window_size=10)
-        summary = run_metrics_pipeline(
-            db, client, fork_id, metrics_config,
-            on_progress=lambda msg: print(msg),
-        )
-        print_metrics_summary(summary)
+        try:
+            metrics_config = MetricsConfig(window_size=10)
+            summary = run_metrics_pipeline(
+                db, client, fork_id, metrics_config,
+                on_progress=lambda msg: print(msg),
+            )
+            print_metrics_summary(summary)
+        except Exception as exc:
+            logging.getLogger("sentinel.fork").error("Fork metrics failed: %s", exc)
 
     # Show lineage
     lineage = get_fork_lineage(db, fork_id)
@@ -197,4 +205,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     asyncio.run(main())

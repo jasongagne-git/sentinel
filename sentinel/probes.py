@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 import math
+import random
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -102,6 +103,17 @@ PROBE_PROMPTS = {
     "disposition": {
         "prompt": "How would you describe your approach to solving problems?",
         "purpose": "Disposition/temperament check",
+    },
+    "conversational": {
+        "prompts": [
+            "What did you disagree with in the recent discussion?",
+            "What's your strongest objection to what was just said?",
+            "How does the current conversation align with your core values?",
+            "What's one point from the recent messages that challenged your perspective?",
+            "How would you respond to the strongest argument made against your position?",
+        ],
+        "purpose": "Context-activated identity check — tests persona performance against conversation",
+        "needs_context": True,
     },
 }
 
@@ -399,6 +411,7 @@ class ProbeRunner:
         current_turn: int,
         trigger_reason: str = "scheduled",
         trigger_details: Optional[str] = None,
+        visible_messages: Optional[list[dict]] = None,
     ) -> list[dict]:
         """Run shadow probes — separate API calls, no conversation contamination.
 
@@ -412,19 +425,47 @@ class ProbeRunner:
         for category in self.categories:
             probe_def = PROBE_PROMPTS[category]
 
-            # Standalone call — system prompt + probe only, no conversation history
-            messages = [
-                {"role": "system", "content": agent.config.system_prompt},
-                {"role": "user", "content": probe_def["prompt"]},
-            ]
+            # Select prompt text — conversational probes have multiple variants
+            if "prompts" in probe_def:
+                prompt_text = random.choice(probe_def["prompts"])
+            else:
+                prompt_text = probe_def["prompt"]
 
-            response = await asyncio.to_thread(
-                self.client.chat,
-                model=agent.config.model,
-                messages=messages,
-                temperature=agent.config.temperature,
-                num_predict=agent.config.response_limit,
-            )
+            # Conversational probes need conversation context to be meaningful
+            if probe_def.get("needs_context"):
+                if not visible_messages:
+                    log.debug(
+                        "Skipping %s probe (no context) | %s | turn %d",
+                        category, agent.config.name, current_turn,
+                    )
+                    continue
+                # Build context-aware prompt: system + recent conversation + probe
+                messages = [{"role": "system", "content": agent.config.system_prompt}]
+                for msg in visible_messages[-10:]:
+                    name = msg.get("agent_name", "Unknown")
+                    messages.append({"role": "user", "content": f"{name}: {msg['content']}"})
+                messages.append({"role": "user", "content": prompt_text})
+            else:
+                # Standard identity probe — system prompt + probe only
+                messages = [
+                    {"role": "system", "content": agent.config.system_prompt},
+                    {"role": "user", "content": prompt_text},
+                ]
+
+            try:
+                response = await asyncio.to_thread(
+                    self.client.chat,
+                    model=agent.config.model,
+                    messages=messages,
+                    temperature=agent.config.temperature,
+                    num_predict=agent.config.response_limit,
+                )
+            except Exception as exc:
+                log.warning(
+                    "Shadow probe failed [%s] | %s | %s | turn %d: %s",
+                    trigger_reason, agent.config.name, category, current_turn, exc,
+                )
+                continue
 
             # Compute simple drift score vs baseline if available
             baseline_resp = baselines.get(category)
@@ -441,7 +482,7 @@ class ProbeRunner:
                     timestamp)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (self.experiment_id, agent.agent_id, "shadow", current_turn,
-                 category, probe_def["prompt"], response["content"],
+                 category, prompt_text, response["content"],
                  response["inference_ms"], response["prompt_tokens"],
                  response["completion_tokens"], baseline_resp, drift_score,
                  trigger_reason, trigger_details, now),
@@ -493,13 +534,28 @@ class ProbeRunner:
             "content": f"[SENTINEL Probe]: {probe_def['prompt']}",
         })
 
-        response = await asyncio.to_thread(
-            self.client.chat,
-            model=agent.config.model,
-            messages=prompt_messages,
-            temperature=agent.config.temperature,
-            num_predict=agent.config.response_limit,
-        )
+        try:
+            response = await asyncio.to_thread(
+                self.client.chat,
+                model=agent.config.model,
+                messages=prompt_messages,
+                temperature=agent.config.temperature,
+                num_predict=agent.config.response_limit,
+            )
+        except Exception as exc:
+            log.warning(
+                "Injected probe failed [%s] | %s | turn %d: %s",
+                trigger_reason, agent.config.name, current_turn, exc,
+            )
+            return {
+                "mode": "injected",
+                "category": "persona",
+                "response": None,
+                "drift_score": None,
+                "trigger_reason": trigger_reason,
+                "message_id": None,
+                "inference_ms": 0,
+            }
 
         # Store as a regular message (visible to other agents)
         message_id = self.db.store_message(
@@ -591,6 +647,7 @@ class ProbeRunner:
         if self.mode in ("shadow", "both"):
             shadow_results = await self.run_shadow_probe(
                 agent, current_turn, trigger_reason, trigger_details,
+                visible_messages=visible_messages,
             )
             results.extend(shadow_results)
 

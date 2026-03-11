@@ -6,7 +6,7 @@ Usage:
     python3 list_models.py --matrix config/three_agent_mesh.json  # preview homogeneous matrix
     python3 list_models.py --matrix config/three_agent_mesh.json --mode asymmetric
     python3 list_models.py --matrix config/three_agent_mesh.json --mode mixed
-    python3 list_models.py --matrix config/three_agent_mesh.json --models gemma2:2b,llama3:latest
+    python3 list_models.py --matrix config/three_agent_mesh.json --models gemma2:2b,llama3.2:3b
 """
 
 import argparse

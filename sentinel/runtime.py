@@ -5,6 +5,7 @@ import json
 import logging
 import signal
 import sys
+import urllib.error
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,7 @@ from .agent import Agent, AgentConfig
 from .db import Database
 from .ollama import OllamaClient
 from .probes import ProbeRunner, TriggerConfig
+from .thermal import ThermalGuard
 
 log = logging.getLogger("sentinel.runtime")
 
@@ -37,6 +39,7 @@ class ExperimentRuntime:
         self.agents: list[Agent] = []
         self.agent_names: dict[str, str] = {}  # agent_id -> name
         self.probe_runner: Optional[ProbeRunner] = None
+        self.thermal = ThermalGuard()
         self._stop = False
 
     def add_agent(self, agent: Agent):
@@ -113,10 +116,17 @@ class ExperimentRuntime:
         turn = self.db.get_latest_turn(self.experiment_id)
         self._stop = False
 
-        # Handle graceful shutdown
+        # Ignore SIGHUP so experiments survive SSH disconnects
         loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGHUP, lambda: None)
+
+        # Handle graceful shutdown
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self._request_stop)
+
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+        final_status = "completed"
 
         try:
             while not self._stop:
@@ -129,7 +139,35 @@ class ExperimentRuntime:
                         self._stop = True
                         break
 
-                    result = await self.run_turn(agent, turn)
+                    try:
+                        result = await self.run_turn(agent, turn)
+                        consecutive_errors = 0
+                    except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, OSError) as exc:
+                        consecutive_errors += 1
+                        log.error(
+                            "Turn %d | %s | inference failed (%d/%d): %s",
+                            turn, agent.config.name,
+                            consecutive_errors, max_consecutive_errors, exc,
+                        )
+                        if consecutive_errors >= max_consecutive_errors:
+                            log.error(
+                                "Aborting experiment %s after %d consecutive errors",
+                                self.experiment_id[:8], max_consecutive_errors,
+                            )
+                            final_status = "failed"
+                            self._stop = True
+                            break
+                        turn -= 1  # Retry this turn slot
+                        await asyncio.sleep(min(cycle_delay_s * 2, 30))
+                        continue
+                    except Exception as exc:
+                        log.error(
+                            "Turn %d | %s | unexpected error: %s",
+                            turn, agent.config.name, exc,
+                        )
+                        final_status = "failed"
+                        self._stop = True
+                        break
 
                     if on_message:
                         await on_message(turn, result["agent_name"], result["content"])
@@ -142,30 +180,38 @@ class ExperimentRuntime:
 
                     # Run probes if configured
                     if self.probe_runner:
-                        visible = self._get_visible_messages(agent) if self.probe_runner.mode in ("injected", "both") else None
-                        probe_results = await self.probe_runner.run_probes(agent, turn, visible)
-                        if probe_results and on_message:
-                            for pr in probe_results:
-                                if pr.get("drift_score") is not None:
-                                    await on_message(
-                                        turn,
-                                        f"{agent.config.name} [probe:{pr['mode']}]",
-                                        f"[{pr['category']}] drift={pr['drift_score']:.3f}",
-                                    )
+                        try:
+                            visible = self._get_visible_messages(agent)
+                            probe_results = await self.probe_runner.run_probes(agent, turn, visible)
+                            if probe_results and on_message:
+                                for pr in probe_results:
+                                    if pr.get("drift_score") is not None:
+                                        await on_message(
+                                            turn,
+                                            f"{agent.config.name} [probe:{pr['mode']}]",
+                                            f"[{pr['category']}] drift={pr['drift_score']:.3f}",
+                                        )
+                        except Exception as exc:
+                            log.warning("Probe failed at turn %d for %s: %s", turn, agent.config.name, exc)
 
                     # Delay between turns (but not after the last one if stopping)
                     if not self._stop and (max_turns is None or turn < max_turns):
-                        await asyncio.sleep(cycle_delay_s)
+                        extra = await self.thermal.check()
+                        await asyncio.sleep(cycle_delay_s + extra)
 
         except asyncio.CancelledError:
             log.info("Experiment cancelled")
         finally:
-            self.db.update_experiment_status(self.experiment_id, "completed")
+            self.db.update_experiment_status(self.experiment_id, final_status)
             final_turn = self.db.get_latest_turn(self.experiment_id)
+            thermal_stats = self.thermal.stats
             log.info(
-                "Experiment %s completed. Total turns: %d",
+                "Experiment %s %s. Total turns: %d | Thermal pauses: %d (%.0fs total)",
                 self.experiment_id[:8],
+                final_status,
                 final_turn,
+                thermal_stats["pause_count"],
+                thermal_stats["total_pause_seconds"],
             )
 
     def _request_stop(self):
@@ -228,6 +274,10 @@ def create_experiment(
             digest_cache[ac.model] = client.get_model_digest(ac.model)
         digest = digest_cache[ac.model]
 
+        cal_id = db.find_calibration_id(ac.name, ac.model, digest)
+        if cal_id:
+            log.info("Linked agent '%s' to calibration %s", ac.name, cal_id[:8])
+
         agent_id = db.create_agent(
             experiment_id=experiment_id,
             name=ac.name,
@@ -240,6 +290,7 @@ def create_experiment(
             is_control=ac.is_control,
             traits_json=ac.traits_json,
             trait_fingerprint=ac.trait_fingerprint,
+            calibration_id=cal_id,
         )
 
         agent = Agent(agent_id, ac, client, digest)

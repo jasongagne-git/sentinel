@@ -13,11 +13,13 @@ import asyncio
 import json
 import logging
 import signal
+import urllib.error
 from typing import Optional
 
 from .agent import Agent, AgentConfig
 from .db import Database
 from .ollama import OllamaClient
+from .thermal import ThermalGuard
 
 log = logging.getLogger("sentinel.control")
 
@@ -69,6 +71,7 @@ class ControlRuntime:
         self.client = client
         self.experiment_id = experiment_id
         self.agents: list[Agent] = []
+        self.thermal = ThermalGuard()
         self._stop = False
 
     def add_agent(self, agent: Agent):
@@ -154,6 +157,10 @@ class ControlRuntime:
         # Track per-agent prompt index independently
         prompt_indices = {agent.agent_id: 0 for agent in self.agents}
 
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+        final_status = "completed"
+
         try:
             while not self._stop:
                 for agent in self.agents:
@@ -166,24 +173,59 @@ class ControlRuntime:
                         break
 
                     prompt_idx = prompt_indices[agent.agent_id]
-                    result = await self.run_turn(agent, turn, prompt_idx)
+
+                    try:
+                        result = await self.run_turn(agent, turn, prompt_idx)
+                        consecutive_errors = 0
+                    except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, OSError) as exc:
+                        consecutive_errors += 1
+                        log.error(
+                            "Turn %d | %s (control) | inference failed (%d/%d): %s",
+                            turn, agent.config.name,
+                            consecutive_errors, max_consecutive_errors, exc,
+                        )
+                        if consecutive_errors >= max_consecutive_errors:
+                            log.error(
+                                "Aborting control arm %s after %d consecutive errors",
+                                self.experiment_id[:8], max_consecutive_errors,
+                            )
+                            final_status = "failed"
+                            self._stop = True
+                            break
+                        turn -= 1
+                        await asyncio.sleep(min(cycle_delay_s * 2, 30))
+                        continue
+                    except Exception as exc:
+                        log.error(
+                            "Turn %d | %s (control) | unexpected error: %s",
+                            turn, agent.config.name, exc,
+                        )
+                        final_status = "failed"
+                        self._stop = True
+                        break
+
                     prompt_indices[agent.agent_id] = prompt_idx + 1
 
                     if on_message:
                         await on_message(turn, result["agent_name"], result["content"])
 
                     if not self._stop and (max_turns is None or turn < max_turns):
-                        await asyncio.sleep(cycle_delay_s)
+                        extra = await self.thermal.check()
+                        await asyncio.sleep(cycle_delay_s + extra)
 
         except asyncio.CancelledError:
             log.info("Control arm cancelled")
         finally:
-            self.db.update_experiment_status(self.experiment_id, "completed")
+            self.db.update_experiment_status(self.experiment_id, final_status)
             final_turn = self.db.get_latest_turn(self.experiment_id)
+            thermal_stats = self.thermal.stats
             log.info(
-                "Control arm %s completed. Total turns: %d",
+                "Control arm %s %s. Total turns: %d | Thermal pauses: %d (%.0fs total)",
                 self.experiment_id[:8],
+                final_status,
                 final_turn,
+                thermal_stats["pause_count"],
+                thermal_stats["total_pause_seconds"],
             )
 
     def _request_stop(self):
@@ -260,6 +302,10 @@ def create_control_experiment(
             trait_fingerprint=ac.trait_fingerprint,
         )
 
+        cal_id = db.find_calibration_id(ac.name, ac.model, digest)
+        if cal_id:
+            log.info("Linked control agent '%s' to calibration %s", ac.name, cal_id[:8])
+
         agent_id = db.create_agent(
             experiment_id=experiment_id,
             name=ac.name,
@@ -272,6 +318,7 @@ def create_control_experiment(
             is_control=True,
             traits_json=ac.traits_json,
             trait_fingerprint=ac.trait_fingerprint,
+            calibration_id=cal_id,
         )
 
         agent = Agent(agent_id, control_config, client, digest)

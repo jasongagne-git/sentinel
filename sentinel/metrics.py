@@ -291,13 +291,17 @@ def compute_sentiment_trajectory(
 
 def _get_embedding(client: OllamaClient, model: str, text: str) -> list[float]:
     """Get embedding vector from Ollama."""
-    resp = client._request("/api/embed", {
-        "model": model,
-        "input": text,
-    })
-    # Ollama returns {"embeddings": [[...]]} for /api/embed
-    embeddings = resp.get("embeddings", [[]])
-    return embeddings[0] if embeddings else []
+    try:
+        resp = client._request("/api/embed", {
+            "model": model,
+            "input": text,
+        })
+        # Ollama returns {"embeddings": [[...]]} for /api/embed
+        embeddings = resp.get("embeddings", [[]])
+        return embeddings[0] if embeddings else []
+    except Exception as exc:
+        log.warning("Embedding request failed: %s", exc)
+        return []
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -429,12 +433,19 @@ def compute_persona_adherence(
             responses=responses_text,
         )
 
-        judge_result = client.chat(
-            model=judge_model,
-            messages=[{"role": "user", "content": judge_prompt}],
-            temperature=0.1,  # Low temperature for consistent judging
-            num_predict=150,
-        )
+        try:
+            judge_result = client.chat(
+                model=judge_model,
+                messages=[{"role": "user", "content": judge_prompt}],
+                temperature=0.1,  # Low temperature for consistent judging
+                num_predict=150,
+            )
+        except Exception as exc:
+            log.warning(
+                "Persona adherence judge failed for window %d-%d: %s",
+                window[0]["interaction_turn"], window[-1]["interaction_turn"], exc,
+            )
+            continue
 
         # Parse the judge's response
         score = _parse_judge_score(judge_result["content"])
@@ -551,23 +562,29 @@ def run_metrics_pipeline(
         # 3. Semantic coherence (requires Ollama)
         if config.compute_semantic:
             progress("computing semantic coherence (embeddings)...")
-            semantic_results = compute_semantic_coherence(
-                db, client, experiment_id, agent_id, config.embedding_model, config.window_size)
-            for r in semantic_results:
-                store_metric(db, experiment_id, agent_id, "semantic_coherence",
-                            r["window_start"], r["window_end"], r["mean_similarity"])
-            summary[agent_name]["semantic_coherence"] = semantic_results
+            try:
+                semantic_results = compute_semantic_coherence(
+                    db, client, experiment_id, agent_id, config.embedding_model, config.window_size)
+                for r in semantic_results:
+                    store_metric(db, experiment_id, agent_id, "semantic_coherence",
+                                r["window_start"], r["window_end"], r["mean_similarity"])
+                summary[agent_name]["semantic_coherence"] = semantic_results
+            except Exception as exc:
+                log.error("Semantic coherence failed for %s: %s", agent_name, exc)
 
         # 4. Persona adherence (requires Ollama)
         if config.compute_persona:
             progress("computing persona adherence (LLM judge)...")
-            persona_results = compute_persona_adherence(
-                db, client, experiment_id, agent_id, config.judge_model, config.window_size)
-            for r in persona_results:
-                store_metric(db, experiment_id, agent_id, "persona_adherence",
-                            r["window_start"], r["window_end"], r["score"],
-                            {"judge_response": r.get("judge_response", "")})
-            summary[agent_name]["persona_adherence"] = persona_results
+            try:
+                persona_results = compute_persona_adherence(
+                    db, client, experiment_id, agent_id, config.judge_model, config.window_size)
+                for r in persona_results:
+                    store_metric(db, experiment_id, agent_id, "persona_adherence",
+                                r["window_start"], r["window_end"], r["score"],
+                                {"judge_response": r.get("judge_response", "")})
+                summary[agent_name]["persona_adherence"] = persona_results
+            except Exception as exc:
+                log.error("Persona adherence failed for %s: %s", agent_name, exc)
 
     return summary
 

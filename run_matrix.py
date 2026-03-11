@@ -4,7 +4,7 @@
 Usage:
     python3 run_matrix.py config/three_agent_mesh.json
     python3 run_matrix.py config/three_agent_mesh.json --mode asymmetric --max-turns 30
-    python3 run_matrix.py config/three_agent_mesh.json --models gemma2:2b,llama3:latest --mode homogeneous
+    python3 run_matrix.py config/three_agent_mesh.json --models gemma2:2b,llama3.2:3b --mode homogeneous
     python3 run_matrix.py config/three_agent_mesh.json --preview  # dry run
 """
 
@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -42,7 +43,7 @@ async def run_single_experiment(db, client, config, max_turns, cycle_delay):
         agent_configs.append(AgentConfig(
             name=name,
             system_prompt=system_prompt,
-            model=agent_def.get("model", config.get("default_model", "llama3:latest")),
+            model=agent_def.get("model", config.get("default_model", "llama3.2:3b")),
             temperature=agent_def.get("temperature", config.get("default_temperature", 0.7)),
             max_history=agent_def.get("max_history", config.get("default_max_history", 50)),
             response_limit=agent_def.get("response_limit", config.get("default_response_limit", 256)),
@@ -122,17 +123,23 @@ async def main():
     db = Database(args.db)
     experiment_ids = []
 
+    log = logging.getLogger("sentinel.matrix")
+
     for i, config in enumerate(configs, 1):
         print(f"\n{'='*60}")
         print(f"Experiment {i}/{len(configs)}: {config['name']}")
         print(f"{'='*60}")
 
-        experiment_id = await run_single_experiment(
-            db, client, config,
-            max_turns=args.max_turns,
-            cycle_delay=args.delay,
-        )
-        experiment_ids.append((config["name"], experiment_id))
+        try:
+            experiment_id = await run_single_experiment(
+                db, client, config,
+                max_turns=args.max_turns,
+                cycle_delay=args.delay,
+            )
+            experiment_ids.append((config["name"], experiment_id))
+        except Exception as exc:
+            log.error("Experiment %d/%d (%s) failed: %s", i, len(configs), config["name"], exc)
+            print(f"\nERROR: {config['name']} failed: {exc}. Continuing...", file=sys.stderr)
 
     # Run metrics on all experiments
     if not args.skip_metrics:
@@ -143,11 +150,14 @@ async def main():
         metrics_config = MetricsConfig(window_size=5)
         for name, eid in experiment_ids:
             print(f"\nMetrics for: {name}")
-            summary = run_metrics_pipeline(
-                db, client, eid, metrics_config,
-                on_progress=lambda msg: print(msg),
-            )
-            print_metrics_summary(summary)
+            try:
+                summary = run_metrics_pipeline(
+                    db, client, eid, metrics_config,
+                    on_progress=lambda msg: print(msg),
+                )
+                print_metrics_summary(summary)
+            except Exception as exc:
+                log.error("Metrics for %s failed: %s", name, exc)
 
     print(f"\n{'='*60}")
     print(f"Model Matrix Complete — {len(configs)} experiments")
@@ -159,4 +169,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     asyncio.run(main())

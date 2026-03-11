@@ -67,16 +67,19 @@ def fork_experiment(
         raise ValueError(f"No agents in source experiment: {source_experiment_id}")
 
     # Determine fork point
+    max_turn = db.get_latest_turn(source_experiment_id)
+    if max_turn == 0:
+        raise ValueError(
+            f"Source experiment {source_experiment_id[:8]} has no messages. "
+            f"Cannot fork from an experiment with no recorded turns."
+        )
     if fork_at_turn is None:
-        fork_at_turn = db.get_latest_turn(source_experiment_id)
-    else:
-        # Validate that the fork turn exists
-        max_turn = db.get_latest_turn(source_experiment_id)
-        if fork_at_turn > max_turn:
-            raise ValueError(
-                f"Fork turn {fork_at_turn} exceeds max turn {max_turn} "
-                f"in experiment {source_experiment_id[:8]}"
-            )
+        fork_at_turn = max_turn
+    elif fork_at_turn > max_turn:
+        raise ValueError(
+            f"Fork turn {fork_at_turn} exceeds max turn {max_turn} "
+            f"in experiment {source_experiment_id[:8]}"
+        )
 
     # Compute metrics snapshot at fork point for the record
     fork_state = _capture_fork_state(db, source_experiment_id, fork_at_turn, source_agents)
@@ -137,6 +140,11 @@ def fork_experiment(
                 source_agent, trait_overrides[source_agent["name"]]
             )
 
+        # Reuse calibration from source agent if traits unchanged
+        cal_id = None
+        if not (trait_overrides and source_agent["name"] in trait_overrides):
+            cal_id = source_agent["calibration_id"]
+
         agent_id = db.create_agent(
             experiment_id=fork_experiment_id,
             name=source_agent["name"],
@@ -150,16 +158,8 @@ def fork_experiment(
             traits_json=traits_json,
             trait_fingerprint=trait_fingerprint,
             forked_from_agent_id=source_agent["agent_id"],
+            calibration_id=cal_id,
         )
-
-        # Reuse calibration from source agent if traits unchanged
-        if not (trait_overrides and source_agent["name"] in trait_overrides):
-            if source_agent["calibration_id"]:
-                db.conn.execute(
-                    "UPDATE agents SET calibration_id=? WHERE agent_id=?",
-                    (source_agent["calibration_id"], agent_id),
-                )
-                db.conn.commit()
 
         config = AgentConfig(
             name=source_agent["name"],
