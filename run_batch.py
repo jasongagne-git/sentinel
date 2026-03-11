@@ -294,6 +294,9 @@ async def run_calibration(
 
     db.update_experiment_status(experiment_id, "running")
 
+    async def _cal_progress(msg):
+        log.info(msg)
+
     cal_ids = await calibrate_all_agents(
         db=db, client=client,
         experiment_id=experiment_id,
@@ -301,7 +304,7 @@ async def run_calibration(
         agent_ids=agent_ids,
         model_digests=model_digests,
         num_runs=3,
-        on_progress=lambda msg: log.info(msg),
+        on_progress=_cal_progress,
     )
 
     db.update_experiment_status(experiment_id, "completed")
