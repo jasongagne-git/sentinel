@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 # Defaults (Jetson Orin Nano)
 _DEFAULT_ZONE = "/sys/class/thermal/thermal_zone8"  # tj-thermal
-_WARN_C = 75
+_WARN_C = 70
 _CRIT_C = 82
 _RESUME_C = 68
 _POLL_S = 10
@@ -40,6 +40,9 @@ class ThermalGuard:
         self.max_wait_s = max_wait_s
         self._pause_count = 0
         self._total_pause_s = 0.0
+        self._max_temp = 0.0
+        self._check_count = 0
+        self._log_interval = 10  # Log temp at INFO every N checks
 
     def read_temp(self) -> float | None:
         """Read current temperature in degrees C, or None if unavailable."""
@@ -54,10 +57,15 @@ class ThermalGuard:
         return {
             "pause_count": self._pause_count,
             "total_pause_seconds": round(self._total_pause_s, 1),
+            "max_temp_c": round(self._max_temp, 1),
+            "checks": self._check_count,
         }
 
-    async def check(self) -> float:
+    async def check(self, context: str = "") -> float:
         """Check thermal state and return extra delay to add (seconds).
+
+        Args:
+            context: Optional label for log messages (e.g. "pre-inference Aria").
 
         Returns:
             0.0  — temperature OK
@@ -68,12 +76,25 @@ class ThermalGuard:
         if temp is None:
             return 0.0  # Don't block on sensor failure
 
+        # Track high-water mark and check count
+        if temp > self._max_temp:
+            self._max_temp = temp
+        self._check_count += 1
+
+        ctx = f" [{context}]" if context else ""
+
+        # Periodic INFO log so we always have a thermal trace
+        if self._check_count % self._log_interval == 0:
+            log.info("Thermal:%s %.1f°C (max=%.1f°C, checks=%d)", ctx, temp, self._max_temp, self._check_count)
+
         if temp >= self.crit_c:
             await self._wait_cooldown(temp)
             return 0.0
         elif temp >= self.warn_c:
-            log.warning("Thermal: %.1f°C (warm) — adding extra delay", temp)
+            log.warning("Thermal:%s %.1f°C (warm) — adding extra delay", ctx, temp)
             return 10.0
+        else:
+            log.debug("Thermal:%s %.1f°C (OK)", ctx, temp)
         return 0.0
 
     async def _wait_cooldown(self, initial_temp: float) -> None:

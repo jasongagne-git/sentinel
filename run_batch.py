@@ -791,6 +791,9 @@ async def main():
             state_files = sorted(logs_base.glob("*/batch_state.json"))
             found = None
             for sf in reversed(state_files):
+                # Skip symlinks (e.g. "latest") to avoid circular symlink bug
+                if sf.parent.is_symlink():
+                    continue
                 state = json.loads(sf.read_text())
                 if state.get("config_file") == str(config_path):
                     found = sf.parent.name

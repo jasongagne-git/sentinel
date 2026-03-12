@@ -8,7 +8,7 @@
 
 # --- Configuration (override before sourcing if needed) ---
 THERMAL_ZONE="${THERMAL_ZONE:-/sys/class/thermal/thermal_zone8}"  # tj-thermal
-THERMAL_WARN_C="${THERMAL_WARN_C:-75}"       # Warning: add extra delays
+THERMAL_WARN_C="${THERMAL_WARN_C:-70}"       # Warning: add extra delays
 THERMAL_CRIT_C="${THERMAL_CRIT_C:-82}"       # Critical: full pause
 THERMAL_RESUME_C="${THERMAL_RESUME_C:-68}"   # Resume threshold (hysteresis)
 THERMAL_POLL_S="${THERMAL_POLL_S:-10}"        # Poll interval during pause

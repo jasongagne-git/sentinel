@@ -139,6 +139,11 @@ class ExperimentRuntime:
                         self._stop = True
                         break
 
+                    # Pre-inference thermal check
+                    pre_extra = await self.thermal.check(f"pre {agent.config.name}")
+                    if pre_extra > 0:
+                        await asyncio.sleep(pre_extra)
+
                     try:
                         result = await self.run_turn(agent, turn)
                         consecutive_errors = 0
@@ -194,10 +199,14 @@ class ExperimentRuntime:
                         except Exception as exc:
                             log.warning("Probe failed at turn %d for %s: %s", turn, agent.config.name, exc)
 
+                    # Post-inference thermal check
+                    post_extra = await self.thermal.check(f"post {agent.config.name}")
+                    if post_extra > 0:
+                        await asyncio.sleep(post_extra)
+
                     # Delay between turns (but not after the last one if stopping)
                     if not self._stop and (max_turns is None or turn < max_turns):
-                        extra = await self.thermal.check()
-                        await asyncio.sleep(cycle_delay_s + extra)
+                        await asyncio.sleep(cycle_delay_s)
 
         except asyncio.CancelledError:
             log.info("Experiment cancelled")
@@ -206,12 +215,14 @@ class ExperimentRuntime:
             final_turn = self.db.get_latest_turn(self.experiment_id)
             thermal_stats = self.thermal.stats
             log.info(
-                "Experiment %s %s. Total turns: %d | Thermal pauses: %d (%.0fs total)",
+                "Experiment %s %s. Total turns: %d | Thermal: pauses=%d (%.0fs), max=%.1f°C, checks=%d",
                 self.experiment_id[:8],
                 final_status,
                 final_turn,
                 thermal_stats["pause_count"],
                 thermal_stats["total_pause_seconds"],
+                thermal_stats["max_temp_c"],
+                thermal_stats["checks"],
             )
 
     def _request_stop(self):
