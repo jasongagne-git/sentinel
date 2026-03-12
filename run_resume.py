@@ -56,13 +56,23 @@ async def main():
         sys.exit(1)
 
     exp_id = row["experiment_id"]
-    current_turn = db.get_latest_turn(exp_id)
+    current_turn, last_agent_id = db.get_resume_position(exp_id)
     max_turns = args.max_turns or row["max_turns"]
+
+    # Show which agent spoke last for mid-cycle awareness
+    last_agent_name = None
+    if last_agent_id:
+        arow = db.conn.execute(
+            "SELECT name FROM agents WHERE agent_id=?", (last_agent_id,),
+        ).fetchone()
+        last_agent_name = arow["name"] if arow else last_agent_id[:8]
 
     print(f"Resuming experiment: {row['name']}")
     print(f"  ID:           {exp_id[:8]}")
     print(f"  Status:       {row['status']}")
     print(f"  Current turn: {current_turn}")
+    if last_agent_name:
+        print(f"  Last agent:   {last_agent_name}")
     print(f"  Target turns: {max_turns}")
     print(f"  Remaining:    {max_turns - current_turn}")
     print()

@@ -480,9 +480,16 @@ async def resume_experiment(
     if not exp:
         raise ValueError(f"Experiment {experiment_id} not found in DB")
 
-    current_turn = db.get_latest_turn(experiment_id)
+    current_turn, last_agent_id = db.get_resume_position(experiment_id)
     max_turns = merged.get("max_turns") or exp["max_turns"]
-    log.info("Resuming %s from turn %d → %d", experiment_id[:8], current_turn, max_turns)
+    last_name = "?"
+    if last_agent_id:
+        arow = db.conn.execute(
+            "SELECT name FROM agents WHERE agent_id=?", (last_agent_id,),
+        ).fetchone()
+        if arow:
+            last_name = arow["name"]
+    log.info("Resuming %s from turn %d (last agent: %s) → %d", experiment_id[:8], current_turn, last_name, max_turns)
 
     if current_turn >= max_turns:
         log.info("Already at max turns, nothing to resume")
@@ -852,7 +859,8 @@ async def main():
     log.info("Runs:     %d", len(runs))
     if args.resume:
         completed = sum(1 for r in state.get("runs", {}).values() if r.get("status") == "completed")
-        log.info("Resume mode: %d/%d already completed", completed, len(runs))
+        partial = sum(1 for r in state.get("runs", {}).values() if r.get("status") == "partial")
+        log.info("Resume mode: %d/%d completed, %d partial (will re-run)", completed, len(runs), partial)
     log.info("=" * 50)
 
     # Connect
@@ -877,7 +885,7 @@ async def main():
             if run_type == "fork":
                 src_label = run_def["source_label"]
                 src_state = state.get("runs", {}).get(src_label, {})
-                if src_state.get("status") != "completed" or not src_state.get("experiment_id"):
+                if src_state.get("status") not in ("completed", "partial") or not src_state.get("experiment_id"):
                     log.error("Skipping fork '%s' — source '%s' not completed", label, src_label)
                     state.setdefault("runs", {})[label] = {
                         "status": "skipped",
@@ -918,11 +926,20 @@ async def main():
                 elif run_type == "paired":
                     result = await run_single_paired(db, client, run_def, merged)
                     experiment_id = result.get("exp_id")
-                    # Store both IDs
+                    ctrl_id = result.get("ctrl_id")
+                    # Both arms must succeed for paired run to be "completed"
+                    if experiment_id and ctrl_id:
+                        paired_status = "completed"
+                    elif experiment_id:
+                        paired_status = "partial"
+                        log.warning("Paired run %s: control arm failed — marking partial", label)
+                    else:
+                        paired_status = "failed"
+                        log.error("Paired run %s: experimental arm failed", label)
                     state.setdefault("runs", {})[label] = {
-                        "status": "completed",
+                        "status": paired_status,
                         "experiment_id": experiment_id,
-                        "ctrl_id": result.get("ctrl_id"),
+                        "ctrl_id": ctrl_id,
                         "completed_at": datetime.now(timezone.utc).isoformat(),
                     }
                 elif run_type == "fork":

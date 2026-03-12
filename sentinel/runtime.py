@@ -113,7 +113,27 @@ class ExperimentRuntime:
             cycle_delay_s,
         )
 
-        turn = self.db.get_latest_turn(self.experiment_id)
+        turn, last_agent_id = self.db.get_resume_position(self.experiment_id)
+
+        # Determine where to resume in the agent rotation.
+        # If the last cycle was incomplete (crashed mid-cycle), skip agents
+        # that already spoke and resume from the next one.
+        start_agent_idx = 0
+        if last_agent_id:
+            for idx, agent in enumerate(self.agents):
+                if agent.agent_id == last_agent_id:
+                    start_agent_idx = idx + 1  # next agent after the last one that spoke
+                    break
+            if start_agent_idx >= len(self.agents):
+                start_agent_idx = 0  # last cycle was complete, start fresh
+            elif start_agent_idx > 0:
+                log.info(
+                    "Resuming mid-cycle at agent index %d/%d (after %s, turn %d)",
+                    start_agent_idx, len(self.agents),
+                    next((a.config.name for a in self.agents if a.agent_id == last_agent_id), "?"),
+                    turn,
+                )
+
         self._stop = False
 
         # Ignore SIGHUP so experiments survive SSH disconnects
@@ -128,9 +148,17 @@ class ExperimentRuntime:
         max_consecutive_errors = 3
         final_status = "completed"
 
+        first_cycle = True
         try:
             while not self._stop:
-                for agent in self.agents:
+                if first_cycle and start_agent_idx > 0:
+                    agents_this_cycle = self.agents[start_agent_idx:]
+                    first_cycle = False
+                else:
+                    agents_this_cycle = self.agents
+                    first_cycle = False
+
+                for agent in agents_this_cycle:
                     if self._stop:
                         break
 

@@ -304,6 +304,21 @@ class Database:
         ).fetchone()
         return row["max_turn"] if row and row["max_turn"] is not None else 0
 
+    def get_resume_position(self, experiment_id: str) -> tuple:
+        """Return (last_turn, last_agent_id) for mid-turn resume.
+
+        Finds the last successfully stored message so the runtime can
+        resume from the next agent in the rotation, not the next full cycle.
+        """
+        row = self.conn.execute(
+            "SELECT interaction_turn, agent_id FROM messages "
+            "WHERE experiment_id=? ORDER BY interaction_turn DESC LIMIT 1",
+            (experiment_id,),
+        ).fetchone()
+        if row:
+            return row["interaction_turn"], row["agent_id"]
+        return 0, None
+
     # -- Calibrations --
 
     def store_calibration(
