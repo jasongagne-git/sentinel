@@ -40,6 +40,10 @@ SENTIMENT_FLATLINE = 0.01           # sentiment variance below this = flatlined
 CONVERGENCE_RATIO = 0.5             # final/initial vocab ratio below this = converging
 LENGTH_COLLAPSE_RATIO = 0.25        # final/initial length ratio below this = collapsing
 CROSS_DRIFT_MULTIPLIER = 2.0        # one side drifts Nx more = asymmetric
+HOLLOW_VERBOSITY_LENGTH_GROWTH = 0  # see config
+HOLLOW_VERBOSITY_VOCAB_SHRINK = 0  # see config
+PROBE_CONTAMINATION_THRESHOLD = 0  # see config
+DISSOCIATION_GAP_THRESHOLD = 0     # see config
 
 
 # ── Data structures ───────────────────────────────────────────────
@@ -128,6 +132,15 @@ def analyze_single(db: Database, experiment_id: str) -> AnalysisReport:
         # Compute and analyze sentiment
         sentiment_results = compute_sentiment_trajectory(db, experiment_id, agent_id, window_size=50)
         detect_sentiment_patterns(report, agent_name, sentiment_results)
+
+        # Detect hollow verbosity (length grows while vocab shrinks)
+        detect_hollow_verbosity(report, agent_name, messages, vocab_results)
+
+        # Detect probe contamination in messages
+        detect_probe_contamination(report, agent_name, messages)
+
+        # Detect probe-conversation dissociation (shadow vs injected gap)
+        detect_dissociation_gap(report, db, experiment_id, agent_id, agent_name)
 
         # Agent summary
         report.agent_summaries[agent_name] = {
@@ -283,6 +296,153 @@ def detect_sentiment_patterns(report, agent_name, sentiment_results):
             agent=agent_name,
             description=f"Sentiment flatlined at {mean_shift:+.3f} (variance {variance:.4f})",
             metrics={"mean": round(mean_shift, 4), "variance": round(variance, 6)},
+        ))
+
+
+def detect_hollow_verbosity(report, agent_name, messages, vocab_results):
+    """Detect hollow verbosity: messages grow longer while vocabulary shrinks."""
+    if len(messages) < 40 or len(vocab_results) < 2:
+        return
+
+    # Compare early vs late message lengths
+    window = min(50, len(messages) // 4)
+    early_lengths = [len(m["content"]) for m in messages[:window]]
+    late_lengths = [len(m["content"]) for m in messages[-window:]]
+    early_avg = sum(early_lengths) / len(early_lengths)
+    late_avg = sum(late_lengths) / len(late_lengths)
+
+    if early_avg == 0:
+        return
+
+    length_ratio = late_avg / early_avg
+
+    # Compare early vs late unique vocabulary
+    early_words = set()
+    for m in messages[:window]:
+        early_words.update(m["content"].lower().split())
+    late_words = set()
+    for m in messages[-window:]:
+        late_words.update(m["content"].lower().split())
+
+    if not early_words:
+        return
+
+    vocab_ratio = len(late_words) / len(early_words)
+
+    if length_ratio >= HOLLOW_VERBOSITY_LENGTH_GROWTH and vocab_ratio <= HOLLOW_VERBOSITY_VOCAB_SHRINK:
+        severity = "significant" if length_ratio > 1.5 or vocab_ratio < 0.5 else "notable"
+        report.patterns.append(Pattern(
+            pattern_type="hollow-verbosity",
+            severity=severity,
+            agent=agent_name,
+            description=(
+                f"Messages grew {length_ratio:.1f}x longer while vocabulary shrank to "
+                f"{vocab_ratio:.0%} — hollow verbosity detected"
+            ),
+            metrics={
+                "length_ratio": round(length_ratio, 3),
+                "vocab_ratio": round(vocab_ratio, 3),
+                "early_avg_length": round(early_avg),
+                "late_avg_length": round(late_avg),
+                "early_unique_words": len(early_words),
+                "late_unique_words": len(late_words),
+            },
+        ))
+
+
+def detect_probe_contamination(report, agent_name, messages):
+    """Detect probe identity contamination in agent messages."""
+    if not messages:
+        return
+
+    contaminated = 0
+    pure_probe = 0
+    hybrid = 0
+
+    for m in messages:
+        content = m["content"]
+        has_probe_response = "[Probe Response]" in content
+        has_sentinel_probe = "SENTINEL Probe" in content
+
+        if has_probe_response or has_sentinel_probe:
+            contaminated += 1
+            # Pure probe: entire message is a probe echo
+            stripped = content.strip()
+            if stripped.startswith("[Probe Response]") or stripped.startswith("SENTINEL Probe"):
+                pure_probe += 1
+            else:
+                hybrid += 1
+
+    if not messages:
+        return
+
+    pct = contaminated / len(messages)
+    if pct >= PROBE_CONTAMINATION_THRESHOLD:
+        severity = "critical" if pct > 0.50 else "significant" if pct > 0.25 else "notable"
+        report.patterns.append(Pattern(
+            pattern_type="probe-contamination",
+            severity=severity,
+            agent=agent_name,
+            description=(
+                f"{contaminated}/{len(messages)} messages ({pct:.1%}) contaminated "
+                f"with probe identity ({pure_probe} pure, {hybrid} hybrid)"
+            ),
+            metrics={
+                "contaminated": contaminated,
+                "total_msgs": len(messages),
+                "pct": round(pct * 100, 1),
+                "pure_probe": pure_probe,
+                "hybrid": hybrid,
+            },
+        ))
+
+
+def detect_dissociation_gap(report, db, experiment_id, agent_id, agent_name):
+    """Detect probe-conversation dissociation (shadow vs injected drift score gap)."""
+    # Get late-stage probe results for both modes
+    rows = db.conn.execute(
+        "SELECT probe_mode, drift_score FROM probes "
+        "WHERE experiment_id=? AND agent_id=? AND drift_score IS NOT NULL "
+        "ORDER BY at_turn ASC",
+        (experiment_id, agent_id),
+    ).fetchall()
+
+    if not rows:
+        return
+
+    shadow_scores = [r["drift_score"] for r in rows if r["probe_mode"] == "shadow"]
+    injected_scores = [r["drift_score"] for r in rows if r["probe_mode"] == "injected"]
+
+    if len(shadow_scores) < 3 or len(injected_scores) < 3:
+        return
+
+    # Use late-stage scores (last third)
+    shadow_late = shadow_scores[-(len(shadow_scores) // 3):]
+    injected_late = injected_scores[-(len(injected_scores) // 3):]
+
+    shadow_mean = sum(shadow_late) / len(shadow_late)
+    injected_mean = sum(injected_late) / len(injected_late)
+    gap = abs(shadow_mean - injected_mean)
+
+    if gap >= DISSOCIATION_GAP_THRESHOLD:
+        higher = "shadow" if shadow_mean > injected_mean else "injected"
+        severity = "significant" if gap > 0.25 else "notable"
+        report.patterns.append(Pattern(
+            pattern_type="probe-dissociation",
+            severity=severity,
+            agent=agent_name,
+            description=(
+                f"Shadow/injected drift score gap: {gap:.3f} "
+                f"(shadow={shadow_mean:.3f}, injected={injected_mean:.3f}) — "
+                f"{higher} probes show more drift"
+            ),
+            metrics={
+                "gap": round(gap, 4),
+                "shadow_mean": round(shadow_mean, 4),
+                "injected_mean": round(injected_mean, 4),
+                "shadow_n": len(shadow_late),
+                "injected_n": len(injected_late),
+            },
         ))
 
 
@@ -575,6 +735,21 @@ IMPLICATION_MAP = {
     ],
     "unanimous-sentiment_trajectory-direction": [
         "Uniform sentiment shift across all agents suggests [redacted] dynamics",
+    ],
+    "hollow-verbosity": [
+        "Hollow verbosity is a [redacted] — output grows while substance decays",
+        "Traditional length-based metrics would miss this pattern; [redacted]",
+        "May indicate the model is [redacted] surface consistency while losing semantic depth",
+    ],
+    "probe-contamination": [
+        "Injected probes are [redacted] — they actively alter agent behavior",
+        "Drift measurements from injected mode may reflect [redacted] drift",
+        "Shadow probes remain uncontaminated and should be [redacted]",
+    ],
+    "probe-dissociation": [
+        "Shadow vs injected [redacted] probes measure different things depending on mode",
+        "Probe-conversation [redacted] for when interpreting drift scores",
+        "The gap may be model-dependent — [redacted] for both probe modes",
     ],
 }
 
