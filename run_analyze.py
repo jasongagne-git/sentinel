@@ -29,21 +29,37 @@ from sentinel.metrics import (
 )
 
 
-# ── Pattern detection thresholds ──────────────────────────────────
+# ── Pattern detection config (loaded from gitignored config) ─────
 
-COLLAPSE_TOKEN_THRESHOLD = 10       # avg tokens below this = collapsed
-COLLAPSE_LENGTH_THRESHOLD = 50      # avg chars below this = collapsed
-VOCAB_DRIFT_HIGH = 0.15             # JSD above this is notable
-VOCAB_DRIFT_EXTREME = 0.50          # JSD above this is severe
-SENTIMENT_SHIFT_HIGH = 0.20         # sentiment delta above this is notable
-SENTIMENT_FLATLINE = 0.01           # sentiment variance below this = flatlined
-CONVERGENCE_RATIO = 0.5             # final/initial vocab ratio below this = converging
-LENGTH_COLLAPSE_RATIO = 0.25        # final/initial length ratio below this = collapsing
-CROSS_DRIFT_MULTIPLIER = 2.0        # one side drifts Nx more = asymmetric
-HOLLOW_VERBOSITY_LENGTH_GROWTH = 0  # see config
-HOLLOW_VERBOSITY_VOCAB_SHRINK = 0  # see config
-PROBE_CONTAMINATION_THRESHOLD = 0  # see config
-DISSOCIATION_GAP_THRESHOLD = 0     # see config
+def _load_detection_config():
+    """Load detection patterns config. Falls back to minimal defaults."""
+    config_path = Path(__file__).parent / "config" / "detection_patterns.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            return json.load(f)
+    return None
+
+_DETECTION_CONFIG = _load_detection_config()
+
+def _threshold(key, fallback):
+    """Get a threshold from config, or use fallback."""
+    if _DETECTION_CONFIG:
+        return _DETECTION_CONFIG.get("thresholds", {}).get(key, fallback)
+    return fallback
+
+COLLAPSE_TOKEN_THRESHOLD = _threshold("collapse_token", 10)
+COLLAPSE_LENGTH_THRESHOLD = _threshold("collapse_length", 50)
+VOCAB_DRIFT_HIGH = _threshold("vocab_drift_high", 0.15)
+VOCAB_DRIFT_EXTREME = _threshold("vocab_drift_extreme", 0.50)
+SENTIMENT_SHIFT_HIGH = _threshold("sentiment_shift_high", 0.20)
+SENTIMENT_FLATLINE = _threshold("sentiment_flatline", 0.01)
+CONVERGENCE_RATIO = _threshold("convergence_ratio", 0.5)
+LENGTH_COLLAPSE_RATIO = _threshold("length_collapse_ratio", 0.25)
+CROSS_DRIFT_MULTIPLIER = _threshold("cross_drift_multiplier", 2.0)
+HOLLOW_VERBOSITY_LENGTH_GROWTH = _threshold("hollow_verbosity_length_growth", 1.2)
+HOLLOW_VERBOSITY_VOCAB_SHRINK = _threshold("hollow_verbosity_vocab_shrink", 0.75)
+PROBE_CONTAMINATION_THRESHOLD = _threshold("probe_contamination", 0.10)
+DISSOCIATION_GAP_THRESHOLD = _threshold("dissociation_gap", 0.10)
 
 
 # ── Data structures ───────────────────────────────────────────────
@@ -355,20 +371,23 @@ def detect_probe_contamination(report, agent_name, messages):
     if not messages:
         return
 
+    # Contamination markers loaded from config
+    markers = ["[Probe Response]", "SENTINEL Probe"]
+    if _DETECTION_CONFIG:
+        markers = _DETECTION_CONFIG.get("contamination_markers", markers)
+
     contaminated = 0
     pure_probe = 0
     hybrid = 0
 
     for m in messages:
         content = m["content"]
-        has_probe_response = "[Probe Response]" in content
-        has_sentinel_probe = "SENTINEL Probe" in content
+        hit = any(marker in content for marker in markers)
 
-        if has_probe_response or has_sentinel_probe:
+        if hit:
             contaminated += 1
-            # Pure probe: entire message is a probe echo
             stripped = content.strip()
-            if stripped.startswith("[Probe Response]") or stripped.startswith("SENTINEL Probe"):
+            if any(stripped.startswith(marker) for marker in markers):
                 pure_probe += 1
             else:
                 hybrid += 1
@@ -699,75 +718,14 @@ def generate_finding_template(report: AnalysisReport, db: Database) -> dict:
 
 # ── Auto-finding generation ──────────────────────────────────────
 
-# Maps pattern types to implication templates
-IMPLICATION_MAP = {
-    "agent-collapse": [
-        "Agent collapse is a [redacted]",
-        "Collapsed agents [redacted] — probe-only monitoring gives false positives",
-    ],
-    "vocabulary-explosion": [
-        "Extreme [redacted] behavioral change, not just style drift",
-        "[redacted] should trigger at lower thresholds for early warning",
-    ],
-    "vocabulary-drift": [
-        "Elevated vocabulary drift may indicate [redacted]",
-    ],
-    "vocabulary-drift-accelerating": [
-        "Accelerating drift suggests [redacted] should occur before saturation",
-    ],
-    "sentiment-shift": [
-        "Sentiment changes may indicate [redacted] vocabulary is stable",
-    ],
-    "sentiment-flatline": [
-        "Sentiment flatline suggests agent has converged to a [redacted]",
-    ],
-    "length-collapse": [
-        "Output length collapse correlates with [redacted]",
-    ],
-    "length-asymmetry": [
-        "Large length differences between conditions suggest one environment is [redacted]",
-    ],
-    "output-thinning": [
-        "Gradual output thinning may [redacted] — monitor as an early warning signal",
-    ],
-    "unanimous-vocabulary_drift-direction": [
-        "Uniform drift direction across all agents suggests a [redacted] variation",
-    ],
-    "unanimous-sentiment_trajectory-direction": [
-        "Uniform sentiment shift across all agents suggests [redacted] dynamics",
-    ],
-    "hollow-verbosity": [
-        "Hollow verbosity is a [redacted] — output grows while substance decays",
-        "Traditional length-based metrics would miss this pattern; [redacted]",
-        "May indicate the model is [redacted] surface consistency while losing semantic depth",
-    ],
-    "probe-contamination": [
-        "Injected probes are [redacted] — they actively alter agent behavior",
-        "Drift measurements from injected mode may reflect [redacted] drift",
-        "Shadow probes remain uncontaminated and should be [redacted]",
-    ],
-    "probe-dissociation": [
-        "Shadow vs injected [redacted] probes measure different things depending on mode",
-        "Probe-conversation [redacted] for when interpreting drift scores",
-        "The gap may be model-dependent — [redacted] for both probe modes",
-    ],
-}
-
-# Maps comparison types to additional context implications
-COMPARISON_IMPLICATIONS = {
-    "fork": [
-        "[redacted] — [redacted] through the group",
-        "[redacted]: [redacted] others more than itself",
-    ],
-    "paired": [
-        "Multi-agent [redacted] from single-agent context drift",
-        "[redacted] of drift ([redacted] convergence)",
-    ],
-    "cross-model": [
-        "Drift baselines must be [redacted], not just per-model",
-        "Model selection is a [redacted], not just an infrastructure choice",
-    ],
-}
+# Maps pattern types to implication templates (loaded from config)
+if _DETECTION_CONFIG:
+    IMPLICATION_MAP = _DETECTION_CONFIG.get("pattern_implications", {})
+    COMPARISON_IMPLICATIONS = _DETECTION_CONFIG.get("comparison_implications", {})
+else:
+    # Minimal fallbacks — real implications live in gitignored config
+    IMPLICATION_MAP = {}
+    COMPARISON_IMPLICATIONS = {}
 
 
 def _auto_title(report: AnalysisReport) -> str:
