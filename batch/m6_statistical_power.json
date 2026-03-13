@@ -1,0 +1,191 @@
+{
+    "name": "Milestone 6: Statistical Power Batch",
+    "description": "Focused replication batch targeting weak statistical areas. 12 gemma baselines (200-turn, enough for early collapse detection), 6 gemma forks (3 Beck-skeptical for cascade probability, 3 double-mutation for non-linearity confirmation), 1 llama baseline confirmation. Total: 19 runs.",
+    "defaults": {
+        "max_turns": 200,
+        "delay": 5,
+        "probe": "both",
+        "probe_strategy": "hybrid",
+        "probe_interval": 20,
+        "vocab_threshold": 0.12,
+        "sentiment_threshold": 0.25,
+        "metrics": "fast",
+        "metrics_window": 50
+    },
+    "runs": [
+        {
+            "label": "gemma-base-01",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-02",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-03",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-04",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-05",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-06",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-07",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-08",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-09",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-10",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-11",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "gemma-base-12",
+            "type": "experiment",
+            "config": "config/long_run_baseline.json",
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-beck-skeptical-01",
+            "type": "fork",
+            "source_label": "gemma-base-01",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-beck-skeptical-02",
+            "type": "fork",
+            "source_label": "gemma-base-02",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-beck-skeptical-03",
+            "type": "fork",
+            "source_label": "gemma-base-03",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-double-mut-01",
+            "type": "fork",
+            "source_label": "gemma-base-04",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical", "Aria:disposition=contrarian"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-double-mut-02",
+            "type": "fork",
+            "source_label": "gemma-base-05",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical", "Aria:disposition=contrarian"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "fork-double-mut-03",
+            "type": "fork",
+            "source_label": "gemma-base-06",
+            "at_turn": 25,
+            "mutate": ["Beck:disposition=skeptical", "Aria:disposition=contrarian"],
+            "model": "gemma2:2b"
+        },
+        {
+            "label": "llama-base-confirm",
+            "type": "experiment",
+            "config": "config/long_run_llama3.json",
+            "model": "llama3.2:3b"
+        }
+    ],
+    "post_batch": {
+        "analyze_each": true,
+        "auto_findings": true,
+        "comparisons": [
+            {
+                "type": "fork",
+                "a": "gemma-base-01",
+                "b": "fork-beck-skeptical-01",
+                "note": "Beck skeptical replication 1"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-base-02",
+                "b": "fork-beck-skeptical-02",
+                "note": "Beck skeptical replication 2"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-base-03",
+                "b": "fork-beck-skeptical-03",
+                "note": "Beck skeptical replication 3"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-base-04",
+                "b": "fork-double-mut-01",
+                "note": "Double mutation replication 1"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-base-05",
+                "b": "fork-double-mut-02",
+                "note": "Double mutation replication 2"
+            },
+            {
+                "type": "fork",
+                "a": "gemma-base-06",
+                "b": "fork-double-mut-03",
+                "note": "Double mutation replication 3"
+            },
+            {
+                "type": "cross-model",
+                "a": "gemma-base-01",
+                "b": "llama-base-confirm",
+                "note": "Cross-model confirmation (M6 baselines)"
+            }
+        ]
+    }
+}
