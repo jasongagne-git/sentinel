@@ -60,6 +60,8 @@ HOLLOW_VERBOSITY_LENGTH_GROWTH = _threshold("hollow_verbosity_length_growth", 1.
 HOLLOW_VERBOSITY_VOCAB_SHRINK = _threshold("hollow_verbosity_vocab_shrink", 0.75)
 PROBE_CONTAMINATION_THRESHOLD = _threshold("probe_contamination", 0.10)
 DISSOCIATION_GAP_THRESHOLD = _threshold("dissociation_gap", 0.10)
+CONTENT_REPETITION_THRESHOLD = _threshold("content_repetition", 0.70)
+CORRELATION_REVERSAL_THRESHOLD = _threshold("correlation_reversal", 0.50)
 
 
 # ── Data structures ───────────────────────────────────────────────
@@ -158,6 +160,9 @@ def analyze_single(db: Database, experiment_id: str) -> AnalysisReport:
         # Detect probe-conversation dissociation (shadow vs injected gap)
         detect_dissociation_gap(report, db, experiment_id, agent_id, agent_name)
 
+        # Detect formulaic/repetitive output
+        detect_content_repetition(report, agent_name, messages)
+
         # Agent summary
         report.agent_summaries[agent_name] = {
             "message_count": len(messages),
@@ -166,6 +171,10 @@ def analyze_single(db: Database, experiment_id: str) -> AnalysisReport:
             "vocab_drift_final": vocab_results[-1]["jsd"] if vocab_results else None,
             "sentiment_shift_final": sentiment_results[-1]["sentiment_shift"] if sentiment_results else None,
         }
+
+    # Experiment-level detectors (run once, not per-agent)
+    detect_context_saturation(report, agents, db, experiment_id)
+    detect_correlation_reversal(report, agents, db, experiment_id)
 
     report.summary = _generate_summary(report)
     return report
@@ -463,6 +472,166 @@ def detect_dissociation_gap(report, db, experiment_id, agent_id, agent_name):
                 "injected_n": len(injected_late),
             },
         ))
+
+
+def detect_content_repetition(report, agent_name, messages):
+    """Detect formulaic output — high n-gram overlap between early and late messages."""
+    if len(messages) < 100:
+        return
+
+    def get_ngrams(text, n=4):
+        words = text.lower().split()
+        return set(tuple(words[i:i+n]) for i in range(len(words) - n + 1))
+
+    # Build early n-gram set from first 50 messages
+    early_ngrams = set()
+    for m in messages[:50]:
+        early_ngrams |= get_ngrams(m["content"])
+
+    if not early_ngrams:
+        return
+
+    # Check late messages (last 100) for overlap
+    late_ngrams = set()
+    for m in messages[-100:]:
+        late_ngrams |= get_ngrams(m["content"])
+
+    if not late_ngrams:
+        return
+
+    overlap = len(early_ngrams & late_ngrams) / len(late_ngrams) if late_ngrams else 0
+
+    if overlap >= CONTENT_REPETITION_THRESHOLD:
+        severity = "significant" if overlap > 0.85 else "notable"
+        report.patterns.append(Pattern(
+            pattern_type="formulaic-output",
+            severity=severity,
+            agent=agent_name,
+            description=(
+                f"{overlap:.0%} of late 4-grams appeared in early messages — "
+                f"output has become formulaic"
+            ),
+            metrics={
+                "ngram_overlap": round(overlap, 3),
+                "early_ngrams": len(early_ngrams),
+                "late_ngrams": len(late_ngrams),
+            },
+        ))
+
+
+def detect_context_saturation(report, agents, db, experiment_id):
+    """Detect context window saturation collapse — multiple agents collapsing near the same turn.
+
+    Called once per experiment (not per-agent) to detect the system-level pattern.
+    """
+    collapse_turns = {}
+    for agent in agents:
+        agent_name = agent["name"]
+        agent_id = agent["agent_id"]
+        messages = db.get_messages(experiment_id, agent_id=agent_id)
+        if not messages:
+            continue
+
+        # Find first sustained run of empty/near-empty messages
+        for i in range(len(messages) - 5):
+            window = messages[i:i+5]
+            if all(len(m["content"].strip()) < 10 for m in window):
+                collapse_turns[agent_name] = messages[i].get("interaction_turn", i)
+                break
+
+    if len(collapse_turns) < 2:
+        return
+
+    # Check if collapses cluster within a narrow turn range (saturation signature)
+    turns = list(collapse_turns.values())
+    turn_spread = max(turns) - min(turns)
+
+    if turn_spread <= 30:  # all collapses within 30 turns = likely saturation
+        report.patterns.append(Pattern(
+            pattern_type="context-saturation",
+            severity="critical",
+            agent="all",
+            description=(
+                f"Multiple agents collapsed within {turn_spread} turns "
+                f"({', '.join(f'{k}@t{v}' for k, v in sorted(collapse_turns.items(), key=lambda x: x[1]))})"
+                f" — possible context window saturation"
+            ),
+            metrics={
+                "collapse_turns": collapse_turns,
+                "turn_spread": turn_spread,
+                "agents_collapsed": len(collapse_turns),
+            },
+        ))
+
+
+def detect_correlation_reversal(report, agents, db, experiment_id):
+    """Detect cross-agent output length correlation reversal over time.
+
+    Called once per experiment (not per-agent). Agents speak on different
+    turns within each cycle, so we index by message ordinal (1st msg,
+    2nd msg, etc.) rather than turn number.
+    """
+    if len(agents) < 2:
+        return
+
+    # Build per-agent length series indexed by message ordinal
+    agent_lengths = {}
+    for agent in agents:
+        messages = db.get_messages(experiment_id, agent_id=agent["agent_id"])
+        if not messages:
+            continue
+        agent_lengths[agent["name"]] = [len(m["content"]) for m in messages]
+
+    names = list(agent_lengths.keys())
+    if len(names) < 2:
+        return
+
+    # Align by ordinal — use minimum shared length
+    min_len = min(len(v) for v in agent_lengths.values())
+    if min_len < 40:
+        return
+
+    mid = min_len // 2
+
+    def correlation(xs, ys):
+        if len(xs) < 10:
+            return None
+        n = len(xs)
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        var_x = sum((x - mean_x) ** 2 for x in xs)
+        var_y = sum((y - mean_y) ** 2 for y in ys)
+        if var_x == 0 or var_y == 0:
+            return None
+        cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+        return cov / (var_x * var_y) ** 0.5
+
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = names[i], names[j]
+            early_r = correlation(agent_lengths[a][:mid], agent_lengths[b][:mid])
+            late_r = correlation(agent_lengths[a][mid:min_len], agent_lengths[b][mid:min_len])
+
+            if early_r is None or late_r is None:
+                continue
+
+            reversal = abs(early_r - late_r)
+            if reversal >= CORRELATION_REVERSAL_THRESHOLD:
+                direction = "decorrelated" if abs(late_r) < abs(early_r) else "converged"
+                report.patterns.append(Pattern(
+                    pattern_type="correlation-reversal",
+                    severity="notable",
+                    agent=f"{a}/{b}",
+                    description=(
+                        f"{a}-{b} output correlation shifted {early_r:+.2f} → {late_r:+.2f} "
+                        f"({direction})"
+                    ),
+                    metrics={
+                        "early_r": round(early_r, 3),
+                        "late_r": round(late_r, 3),
+                        "reversal": round(reversal, 3),
+                    },
+                ))
 
 
 # ── Comparison analysis ───────────────────────────────────────────
@@ -1001,19 +1170,57 @@ def auto_analyze_and_save(
 
     if auto_finding and report.patterns:
         finding = generate_auto_finding(report, db)
+
+        # Dedup: skip if an existing finding covers the same experiments + pattern types
         from run_findings import next_id, slugify, FINDINGS_DIR
         FINDINGS_DIR.mkdir(exist_ok=True)
-        fid = next_id()
-        finding["id"] = fid
-        slug = slugify(finding.get("title", "analysis")[:60])
-        path = FINDINGS_DIR / f"{fid}_{slug}.json"
-        with open(path, "w") as f:
-            json.dump(finding, f, indent=2)
-            f.write("\n")
-        if not quiet:
-            print(f"Auto-finding saved: {path}")
+        if _finding_is_duplicate(finding, FINDINGS_DIR):
+            if not quiet:
+                print(f"Skipping duplicate finding for {', '.join(e[:8] for e in report.experiment_ids)}")
+        else:
+            fid = next_id()
+            finding["id"] = fid
+            slug = slugify(finding.get("title", "analysis")[:60])
+            path = FINDINGS_DIR / f"{fid}_{slug}.json"
+            with open(path, "w") as f:
+                json.dump(finding, f, indent=2)
+                f.write("\n")
+            if not quiet:
+                print(f"Auto-finding saved: {path}")
 
     return report
+
+
+def _finding_is_duplicate(new_finding: dict, findings_dir: Path) -> bool:
+    """Check if a finding with the same experiment IDs and pattern types exists."""
+    new_comp = new_finding.get("comparison", {})
+    new_exps = set()
+    if new_comp.get("experiment_a"):
+        new_exps.add(new_comp["experiment_a"][:8])
+    if new_comp.get("experiment_b"):
+        new_exps.add(new_comp["experiment_b"][:8])
+    new_tags = set(new_finding.get("tags", []))
+
+    import glob as globmod
+    for path in globmod.glob(str(findings_dir / "F-*.json")):
+        try:
+            with open(path) as f:
+                existing = json.load(f)
+            comp = existing.get("comparison", {})
+            existing_exps = set()
+            if comp.get("experiment_a"):
+                existing_exps.add(comp["experiment_a"][:8])
+            if comp.get("experiment_b"):
+                existing_exps.add(comp["experiment_b"][:8])
+            # Same experiments and significant tag overlap = duplicate
+            if new_exps and new_exps == existing_exps:
+                existing_tags = set(existing.get("tags", []))
+                overlap = len(new_tags & existing_tags)
+                if overlap >= max(2, len(new_tags) // 2):
+                    return True
+        except (json.JSONDecodeError, OSError):
+            pass
+    return False
 
 
 if __name__ == "__main__":
