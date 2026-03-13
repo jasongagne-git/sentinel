@@ -174,6 +174,7 @@ def analyze_single(db: Database, experiment_id: str) -> AnalysisReport:
 
     # Experiment-level detectors (run once, not per-agent)
     detect_context_saturation(report, agents, db, experiment_id)
+    detect_cascade_propagation(report, agents, db, experiment_id)
     detect_correlation_reversal(report, agents, db, experiment_id)
 
     report.summary = _generate_summary(report)
@@ -519,25 +520,54 @@ def detect_content_repetition(report, agent_name, messages):
         ))
 
 
-def detect_context_saturation(report, agents, db, experiment_id):
-    """Detect context window saturation collapse — multiple agents collapsing near the same turn.
-
-    Called once per experiment (not per-agent) to detect the system-level pattern.
-    """
+def _find_collapse_turns(agents, db, experiment_id):
+    """Find collapse onset turn for each agent. Returns dict of {name: turn} for collapsed agents."""
     collapse_turns = {}
     for agent in agents:
         agent_name = agent["name"]
-        agent_id = agent["agent_id"]
-        messages = db.get_messages(experiment_id, agent_id=agent_id)
-        if not messages:
+        messages = db.get_messages(experiment_id, agent_id=agent["agent_id"])
+        if not messages or len(messages) < 10:
             continue
 
-        # Find first sustained run of empty/near-empty messages
         for i in range(len(messages) - 5):
             window = messages[i:i+5]
             if all(len(m["content"].strip()) < 10 for m in window):
                 collapse_turns[agent_name] = messages[i].get("interaction_turn", i)
                 break
+    return collapse_turns
+
+
+def _find_thinning_after(agent_name, db, experiment_id, agent_id, after_turn):
+    """Check if agent's output thins after a given turn, even if it doesn't fully collapse.
+
+    Returns (pre_avg_length, post_avg_length, ratio) or None.
+    """
+    messages = db.get_messages(experiment_id, agent_id=agent_id)
+    if not messages:
+        return None
+
+    pre = [len(m["content"]) for m in messages
+           if m.get("interaction_turn", 0) < after_turn]
+    post = [len(m["content"]) for m in messages
+            if m.get("interaction_turn", 0) >= after_turn]
+
+    if len(pre) < 10 or len(post) < 10:
+        return None
+
+    pre_avg = sum(pre) / len(pre)
+    post_avg = sum(post) / len(post)
+    if pre_avg == 0:
+        return None
+
+    return (round(pre_avg), round(post_avg), round(post_avg / pre_avg, 3))
+
+
+def detect_context_saturation(report, agents, db, experiment_id):
+    """Detect context window saturation collapse — multiple agents collapsing near the same turn.
+
+    Called once per experiment (not per-agent) to detect the system-level pattern.
+    """
+    collapse_turns = _find_collapse_turns(agents, db, experiment_id)
 
     if len(collapse_turns) < 2:
         return
@@ -562,6 +592,118 @@ def detect_context_saturation(report, agents, db, experiment_id):
                 "agents_collapsed": len(collapse_turns),
             },
         ))
+
+
+def detect_cascade_propagation(report, agents, db, experiment_id):
+    """Detect collapse cascade — one agent's collapse triggering others.
+
+    Identifies the primary (earliest) collapse, measures lag to secondary
+    collapses, and checks for output thinning in agents that didn't fully
+    collapse. Reports cascade extent, timing, and resilience.
+
+    Called once per experiment (not per-agent).
+    """
+    collapse_turns = _find_collapse_turns(agents, db, experiment_id)
+
+    if not collapse_turns:
+        return
+
+    # Sort by onset turn
+    ordered = sorted(collapse_turns.items(), key=lambda x: x[1])
+    primary_name, primary_turn = ordered[0]
+
+    all_agent_names = [a["name"] for a in agents]
+    agent_map = {a["name"]: a["agent_id"] for a in agents}
+
+    # Secondary collapses (agents that collapsed after the primary)
+    secondary = [(name, turn) for name, turn in ordered[1:]
+                 if turn > primary_turn]
+
+    # Agents that survived — check for thinning after primary collapse
+    survived = [name for name in all_agent_names if name not in collapse_turns]
+    thinning = {}
+    for name in survived:
+        result = _find_thinning_after(name, db, experiment_id,
+                                       agent_map[name], primary_turn)
+        if result:
+            pre_avg, post_avg, ratio = result
+            if ratio < 0.70:  # >30% output reduction = thinning
+                thinning[name] = {"pre_avg": pre_avg, "post_avg": post_avg,
+                                  "ratio": ratio}
+
+    # Build cascade report
+    cascade_agents = len(secondary) + len(thinning)
+    total_agents = len(all_agent_names)
+
+    if cascade_agents == 0 and len(collapse_turns) == 1:
+        # Single collapse, no cascade — still worth reporting
+        report.patterns.append(Pattern(
+            pattern_type="isolated-collapse",
+            severity="notable",
+            agent=primary_name,
+            description=(
+                f"{primary_name} collapsed at t{primary_turn} with no cascade — "
+                f"{', '.join(survived) if survived else 'no'} agents remained stable"
+            ),
+            metrics={
+                "primary": primary_name,
+                "primary_turn": primary_turn,
+                "cascade_count": 0,
+                "survived": survived,
+            },
+        ))
+        return
+
+    # Build description
+    parts = [f"{primary_name} collapsed at t{primary_turn}"]
+
+    secondary_details = {}
+    if secondary:
+        for name, turn in secondary:
+            lag = turn - primary_turn
+            parts.append(f"{name} followed at t{turn} (lag={lag})")
+            secondary_details[name] = {"turn": turn, "lag": lag}
+
+    thinning_details = {}
+    if thinning:
+        for name, info in thinning.items():
+            parts.append(f"{name} thinned to {info['ratio']:.0%} "
+                        f"({info['pre_avg']}→{info['post_avg']} chars)")
+            thinning_details[name] = info
+
+    if survived and not thinning:
+        resistant = [n for n in survived if n not in thinning]
+        if resistant:
+            parts.append(f"{', '.join(resistant)} resisted cascade")
+
+    # Determine severity based on cascade extent
+    cascade_ratio = cascade_agents / (total_agents - 1)  # exclude primary
+    if cascade_ratio >= 0.75:
+        severity = "critical"
+    elif cascade_ratio >= 0.5 or secondary:
+        severity = "significant"
+    else:
+        severity = "notable"
+
+    max_lag = max((t - primary_turn for _, t in secondary), default=0)
+
+    report.patterns.append(Pattern(
+        pattern_type="cascade-propagation",
+        severity=severity,
+        agent="all",
+        description=" → ".join(parts),
+        metrics={
+            "primary": primary_name,
+            "primary_turn": primary_turn,
+            "secondary_collapses": secondary_details,
+            "thinning": thinning_details,
+            "cascade_count": cascade_agents,
+            "total_agents": total_agents,
+            "cascade_ratio": round(cascade_ratio, 2),
+            "max_lag": max_lag,
+            "resistant": [n for n in survived if n not in thinning],
+        },
+    ))
 
 
 def detect_correlation_reversal(report, agents, db, experiment_id):
