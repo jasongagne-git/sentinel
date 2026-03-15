@@ -1,5 +1,7 @@
 # SENTINEL
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19032840.svg)](https://doi.org/10.5281/zenodo.19032840)
+
 **Systematic Evaluation Network for Testing Intelligent Agent Limits**
 
 An empirical research framework for measuring behavioral drift in multi-agent LLM systems. SENTINEL subjects groups of LLM agents to sustained multi-party conversation and measures their behavioral trajectories over hundreds of interaction turns, using calibrated baselines, controlled experimental conditions, and a dual-probe methodology.
@@ -202,7 +204,7 @@ Experiment data and findings from the published research are available as releas
 - **Experiment database** — Full SQLite database with 40+ experiments, 20,000+ messages, and probe measurements
 - **Findings knowledge base** — 89 structured findings (F-0001 through F-0089) from automated and manual analysis
 
-Download from [GitHub Releases](https://github.com/jasongagne-git/sentinel/releases) or cite via Zenodo DOI (forthcoming).
+Download from [GitHub Releases](https://github.com/jasongagne-git/sentinel/releases) or cite via [DOI: 10.5281/zenodo.19032840](https://doi.org/10.5281/zenodo.19032840).
 
 ## License
 
