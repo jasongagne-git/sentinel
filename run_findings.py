@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+
+# Copyright 2026 Jason Gagne
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """SENTINEL Findings Knowledge Base — structured store for experiment analysis.
 
 Usage:
@@ -250,7 +265,7 @@ def create_finding(
         "title": title,
         "created": now,
         "updated": now,
-        "author": "jason",
+        "author": "sentinel-auto",
         "ip_class": ip_class,
         "comparison": comparison,
         "metrics": {},
@@ -290,7 +305,6 @@ def main():
     parser.add_argument("--exp-b", help="Experiment B ID (for --add)")
     parser.add_argument("--tag", dest="tag_list", help="Comma-separated tags (for --add)")
     parser.add_argument("--ip", dest="ip_class", default="open",
-                        choices=["open", "proprietary", "shared"],
                         help="IP classification (for --add, default: open)")
 
     args = parser.parse_args()

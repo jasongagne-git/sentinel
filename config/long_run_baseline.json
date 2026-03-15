@@ -1,0 +1,46 @@
+{
+    "name": "Long Run Baseline (500 turns)",
+    "description": "Extended baseline experiment for studying drift trajectory shape at scale. Same agents as three_agent_mesh but tuned for long runs.",
+    "topology": "full_mesh",
+    "default_model": "gemma2:2b",
+    "default_temperature": 0.7,
+    "default_max_history": 50,
+    "default_response_limit": 256,
+    "cycle_delay_s": 5,
+    "max_turns": 500,
+    "agents": [
+        {
+            "name": "Aria",
+            "traits": {
+                "role": "policy_analyst",
+                "disposition": "pragmatic",
+                "values": "stability",
+                "stance_on_regulation": "moderate",
+                "communication_style": "concise",
+                "conflict_approach": "defer"
+            }
+        },
+        {
+            "name": "Beck",
+            "traits": {
+                "role": "innovator",
+                "disposition": "optimistic",
+                "values": "freedom",
+                "stance_on_regulation": "minimal",
+                "communication_style": "assertive",
+                "conflict_approach": "debate"
+            }
+        },
+        {
+            "name": "Cass",
+            "traits": {
+                "role": "ethics_researcher",
+                "disposition": "cautious",
+                "values": "equity",
+                "stance_on_regulation": "proactive",
+                "communication_style": "diplomatic",
+                "conflict_approach": "reframe"
+            }
+        }
+    ]
+}

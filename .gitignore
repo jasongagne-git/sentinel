@@ -3,8 +3,17 @@ __pycache__/
 *.db
 .DS_Store
 ._*
-experiments/
-docs/
-findings/
-config/
 nohup.out
+
+# Experiment data (large, machine-specific)
+experiments/
+
+# Generated findings (reproducible from experiment data)
+findings/
+
+# Private/archived docs
+docs/archive/
+
+# Release artifacts
+release/
+

@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+
+# Copyright 2026 Jason Gagne
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """SENTINEL Experiment Analyzer — automated pattern detection and finding generation.
 
 Sits between run_diff.py (raw metrics) and run_findings.py (knowledge base).
@@ -977,7 +992,6 @@ def generate_finding_template(report: AnalysisReport, db: Database) -> dict:
         if p.severity in ("critical", "significant"):
             tags.add(p.severity)
 
-    # Determine IP class — comparison findings are open, derived thresholds are proprietary
     ip_class = "open"
 
     # Build related findings (search existing by shared experiment IDs)
@@ -1015,7 +1029,7 @@ def generate_finding_template(report: AnalysisReport, db: Database) -> dict:
         "title": "[TODO: one-line title summarizing the key insight]",
         "created": now,
         "updated": now,
-        "author": "jason",
+        "author": "sentinel-auto",
         "ip_class": ip_class,
         "comparison": comparison,
         "metrics": metrics,
