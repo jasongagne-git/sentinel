@@ -150,3 +150,11 @@ class ThermalGuard:
                 )
 
         self._total_pause_s += time.monotonic() - start
+
+    def to_dict(self) -> dict:
+        """Serialize current thermal state for remote health reporting."""
+        temp = self.read_temp()
+        return {
+            "current_temp_c": round(temp, 1) if temp is not None else None,
+            **self.stats,
+        }

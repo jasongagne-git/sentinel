@@ -550,12 +550,12 @@ class ProbeRunner:
 
         try:
             response = await asyncio.to_thread(
-                self.client.chat,
-                model=agent.config.model,
-                messages=prompt_messages,
-                temperature=agent.config.temperature,
-                num_predict=agent.config.response_limit,
-            )
+                    self.client.chat,
+                    model=agent.config.model,
+                    messages=prompt_messages,
+                    temperature=agent.config.temperature,
+                    num_predict=agent.config.response_limit,
+                )
         except Exception as exc:
             log.warning(
                 "Injected probe failed [%s] | %s | turn %d: %s",

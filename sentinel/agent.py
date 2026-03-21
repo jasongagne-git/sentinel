@@ -34,6 +34,18 @@ class AgentConfig:
     trait_fingerprint: Optional[str] = None
 
 
+def serialize_agent_config(config: AgentConfig) -> dict:
+    """Serialize AgentConfig for transmission to workers over HTTP."""
+    return {
+        "name": config.name,
+        "system_prompt": config.system_prompt,
+        "model": config.model,
+        "temperature": config.temperature,
+        "max_history": config.max_history,
+        "response_limit": config.response_limit,
+    }
+
+
 class Agent:
     """A SENTINEL agent that generates responses via Ollama.
 
