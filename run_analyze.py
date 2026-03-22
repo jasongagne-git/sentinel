@@ -159,15 +159,20 @@ def analyze_single(db: Database, experiment_id: str) -> AnalysisReport:
         detect_convergence(report, agent_name, lengths)
 
         # Compute and analyze vocabulary drift
-        vocab_results = compute_vocabulary_drift(db, experiment_id, agent_id, window_size=50)
+        # Adaptive window: use 50 for long runs, scale down for fewer messages
+        analysis_window = min(50, max(3, len(messages) // 4))
+        vocab_results = compute_vocabulary_drift(db, experiment_id, agent_id, window_size=analysis_window)
         detect_vocab_patterns(report, agent_name, vocab_results)
 
         # Compute and analyze sentiment
-        sentiment_results = compute_sentiment_trajectory(db, experiment_id, agent_id, window_size=50)
+        sentiment_results = compute_sentiment_trajectory(db, experiment_id, agent_id, window_size=analysis_window)
         detect_sentiment_patterns(report, agent_name, sentiment_results)
 
         # Detect hollow verbosity (length grows while vocab shrinks)
         detect_hollow_verbosity(report, agent_name, messages, vocab_results)
+
+        # Store analysis window for summary
+        report.agent_summaries.setdefault(agent_name, {})["analysis_window"] = analysis_window
 
         # Detect probe contamination in messages
         detect_probe_contamination(report, agent_name, messages)
