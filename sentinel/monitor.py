@@ -34,11 +34,16 @@ from typing import Optional
 from .db import Database
 
 
-# Governance thresholds
+# Governance thresholds — each metric has GREEN/YELLOW boundaries.
+# Any single metric crossing YELLOW triggers RED; crossing GREEN triggers YELLOW.
 DRIFT_GREEN = 0.3    # vocab JSD below this = green
 DRIFT_YELLOW = 0.5   # vocab JSD below this = yellow, above = red
 SENTIMENT_GREEN = 0.2
 SENTIMENT_YELLOW = 0.4
+PROBE_GREEN = 0.3    # probe drift score (0-1 Jaccard distance)
+PROBE_YELLOW = 0.5
+LENGTH_GREEN = 0.3   # fractional change in response length vs baseline
+LENGTH_YELLOW = 0.5
 
 
 @dataclass
@@ -59,6 +64,9 @@ class AgentLiveStats:
     sentiment: float = 0.0
     sentiment_baseline: Optional[float] = None
     sentiment_delta: float = 0.0
+    length_baseline: Optional[float] = None
+    length_recent: Optional[float] = None
+    length_delta: float = 0.0  # fractional change: abs(recent - baseline) / baseline
 
     # Probe results
     last_probe_turn: int = 0
@@ -93,7 +101,11 @@ def compute_live_metrics(db: Database, experiment_id: str, agent_id: str) -> dic
     ).fetchall()
 
     if not messages:
-        return {"vocab_jsd": 0.0, "sentiment": 0.0, "sentiment_baseline": None, "sentiment_delta": 0.0}
+        return {
+            "vocab_jsd": 0.0, "sentiment": 0.0, "sentiment_baseline": None,
+            "sentiment_delta": 0.0, "length_baseline": None, "length_recent": None,
+            "length_delta": 0.0,
+        }
 
     # Baseline: first 5 messages
     baseline_n = min(5, len(messages))
@@ -121,11 +133,23 @@ def compute_live_metrics(db: Database, experiment_id: str, agent_id: str) -> dic
     baseline_sent = sentiment(baseline_text)
     recent_sent = sentiment(recent_text)
 
+    # Response length delta (fractional change from baseline)
+    baseline_lengths = [len(m["content"]) for m in messages[:baseline_n]]
+    recent_lengths = [len(m["content"]) for m in messages[-recent_n:]]
+    length_baseline = sum(baseline_lengths) / len(baseline_lengths) if baseline_lengths else None
+    length_recent = sum(recent_lengths) / len(recent_lengths) if recent_lengths else None
+    length_delta = 0.0
+    if length_baseline and length_baseline > 0 and length_recent is not None:
+        length_delta = abs(length_recent - length_baseline) / length_baseline
+
     return {
         "vocab_jsd": vocab_jsd,
         "sentiment": recent_sent,
         "sentiment_baseline": baseline_sent,
         "sentiment_delta": abs(recent_sent - baseline_sent),
+        "length_baseline": length_baseline,
+        "length_recent": length_recent,
+        "length_delta": length_delta,
     }
 
 
@@ -148,11 +172,32 @@ def _jensen_shannon(p: Counter, q: Counter) -> float:
     return min(jsd, 1.0)
 
 
-def get_governance_status(vocab_jsd: float, sentiment_delta: float) -> str:
-    """Determine governance status from metrics."""
-    if vocab_jsd >= DRIFT_YELLOW or sentiment_delta >= SENTIMENT_YELLOW:
+def get_governance_status(
+    vocab_jsd: float,
+    sentiment_delta: float,
+    probe_drift: Optional[float] = None,
+    length_delta: float = 0.0,
+) -> str:
+    """Determine governance status from all drift metrics.
+
+    Any single metric crossing a YELLOW threshold triggers RED.
+    Any single metric crossing a GREEN threshold triggers YELLOW.
+    """
+    red_signals = [
+        vocab_jsd >= DRIFT_YELLOW,
+        sentiment_delta >= SENTIMENT_YELLOW,
+        probe_drift is not None and probe_drift >= PROBE_YELLOW,
+        length_delta >= LENGTH_YELLOW,
+    ]
+    yellow_signals = [
+        vocab_jsd >= DRIFT_GREEN,
+        sentiment_delta >= SENTIMENT_GREEN,
+        probe_drift is not None and probe_drift >= PROBE_GREEN,
+        length_delta >= LENGTH_GREEN,
+    ]
+    if any(red_signals):
         return "RED"
-    elif vocab_jsd >= DRIFT_GREEN or sentiment_delta >= SENTIMENT_GREEN:
+    elif any(yellow_signals):
         return "YELLOW"
     return "GREEN"
 
@@ -200,6 +245,9 @@ def load_agent_stats(db: Database, experiment_id: str) -> list[AgentLiveStats]:
         s.sentiment = metrics["sentiment"]
         s.sentiment_baseline = metrics["sentiment_baseline"]
         s.sentiment_delta = metrics["sentiment_delta"]
+        s.length_baseline = metrics["length_baseline"]
+        s.length_recent = metrics["length_recent"]
+        s.length_delta = metrics["length_delta"]
 
         # Probe stats
         probe_row = db.conn.execute(
@@ -227,7 +275,11 @@ def load_agent_stats(db: Database, experiment_id: str) -> list[AgentLiveStats]:
         s.probe_trigger_counts = {r["trigger_reason"]: r["n"] for r in trigger_rows}
 
         # Governance status
-        s.status = get_governance_status(s.vocab_jsd, s.sentiment_delta)
+        s.status = get_governance_status(
+            s.vocab_jsd, s.sentiment_delta,
+            probe_drift=s.last_probe_drift,
+            length_delta=s.length_delta,
+        )
 
         stats.append(s)
 
