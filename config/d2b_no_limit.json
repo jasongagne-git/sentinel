@@ -9,7 +9,7 @@
     "cycle_delay_s": 4,
     "max_turns": 500,
     "probe": {
-        "mode": "hybrid",
+        "mode": "both",
         "interval": 10
     },
     "distributed": {

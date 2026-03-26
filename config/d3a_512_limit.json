@@ -1,13 +1,13 @@
 {
-    "name": "Distributed 10-Agent Baseline",
-    "description": "First long distributed experiment. 10 agents from the standard archetype lexicon across 2 nodes (mayhem0 + mayhem1). Establishes distributed baseline for comparison with single-node M6 results.",
+    "name": "D3a — 512 Token Limit (Clean Rerun)",
+    "description": "Clean rerun of D2a with bug fixes applied (probe wiring, Sol collapse, worker stats reset). Same parameters: calibrated, 10 agents, 500 turns, gemma2:2b, 512-token limit. Paired with D3b (unlimited).",
     "topology": "full_mesh",
     "default_model": "gemma2:2b",
     "default_temperature": 0.7,
     "default_max_history": 50,
-    "default_response_limit": 256,
+    "default_response_limit": 512,
     "cycle_delay_s": 4,
-    "max_turns": 200,
+    "max_turns": 500,
     "probe": {
         "mode": "both",
         "interval": 10
