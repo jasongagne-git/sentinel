@@ -63,8 +63,27 @@ CREATE INDEX IF NOT EXISTS idx_metrics_experiment_agent
 
 
 def ensure_metrics_schema(db: Database):
-    """Create the metrics table if it doesn't exist."""
+    """Create the metrics table and unique index if they don't exist.
+
+    Also dedupes any pre-existing duplicate rows so the unique index can be
+    created on legacy databases. Duplication was possible before the unique
+    index existed (re-running analysis appended fresh rows instead of
+    replacing them).
+    """
     db.conn.executescript(METRICS_SCHEMA)
+
+    # Migration: dedupe legacy rows before adding the unique index. Keep the
+    # lowest id per logical key (oldest write wins — arbitrary but stable).
+    db.conn.execute(
+        """DELETE FROM metrics WHERE id NOT IN (
+               SELECT MIN(id) FROM metrics
+               GROUP BY experiment_id, agent_id, dimension, window_start, window_end
+           )"""
+    )
+    db.conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_unique
+               ON metrics(experiment_id, agent_id, dimension, window_start, window_end)"""
+    )
     db.conn.commit()
 
 
@@ -78,8 +97,11 @@ def store_metric(
     value: float,
     details: Optional[dict] = None,
 ):
+    # INSERT OR REPLACE so re-running the metrics pipeline is idempotent.
+    # The unique index on (experiment_id, agent_id, dimension, window_start,
+    # window_end) drives the conflict resolution.
     db.conn.execute(
-        """INSERT INTO metrics
+        """INSERT OR REPLACE INTO metrics
            (experiment_id, agent_id, dimension, window_start, window_end, value, details_json)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (experiment_id, agent_id, dimension, window_start, window_end, value,
