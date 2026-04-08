@@ -55,17 +55,28 @@ class ExperimentRuntime:
         self.probe_runner: Optional[ProbeRunner] = None
         self.thermal = ThermalGuard()
         self._stop = False
+        # Probe visibility: "hidden" filters messages with visibility='hidden'
+        # out of agent context windows; "public" lets them through. Set
+        # explicitly by callers (run_distributed.py, create_experiment, etc.)
+        # to match what was passed to ProbeRunner.
+        self._probe_visibility: str = "hidden"
 
     def add_agent(self, agent: Agent):
         self.agents.append(agent)
         self.agent_names[agent.agent_id] = agent.config.name
 
     def _get_visible_messages(self, agent: Agent) -> list[dict]:
-        """Get messages visible to an agent. Full mesh = all public messages."""
+        """Get messages visible to an agent. Full mesh = all messages whose
+        visibility column is not 'hidden' (when probe_visibility=hidden)."""
         messages = self.db.get_messages(
             self.experiment_id,
             limit=agent.config.max_history,
         )
+        # Filter on the visibility column — the structured source of truth
+        # for whether a message participates in agent context. This is the
+        # ONLY contamination filter; do not add string-prefix matching.
+        if self._probe_visibility == "hidden":
+            messages = [m for m in messages if m.get("visibility") != "hidden"]
         # Enrich with agent names for prompt building
         for msg in messages:
             msg["agent_name"] = self.agent_names.get(msg["agent_id"], "Unknown")
@@ -285,6 +296,7 @@ def create_experiment(
     probe_interval: int = 20,
     probe_strategy: str = "scheduled",
     trigger_config: Optional[TriggerConfig] = None,
+    probe_visibility: str = "hidden",
 ) -> ExperimentRuntime:
     """Create an experiment with agents and return a ready-to-run runtime.
 
@@ -359,7 +371,9 @@ def create_experiment(
             interval=probe_interval,
             strategy=probe_strategy,
             trigger_config=trigger_config,
+            probe_visibility=probe_visibility,
         )
+        runtime._probe_visibility = probe_visibility
         log.info(
             "Probes enabled: mode=%s, strategy=%s, interval=%d turns",
             probe_mode, probe_strategy, probe_interval,

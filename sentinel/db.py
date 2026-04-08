@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     status TEXT NOT NULL DEFAULT 'created',
     forked_from_experiment_id TEXT,
     fork_at_turn INTEGER,
+    probe_visibility TEXT,
     FOREIGN KEY (forked_from_experiment_id) REFERENCES experiments(experiment_id)
 );
 
@@ -138,7 +139,28 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """Idempotent schema migrations for legacy databases.
+
+        Each migration is a try/except over an ALTER TABLE that catches
+        the 'duplicate column' error so re-running is safe. New migrations
+        should follow the same pattern and never modify existing data.
+        """
+        # 2026-04-07: experiments.probe_visibility column for tracking the
+        # probe contamination mode that produced each experiment's data.
+        # Backfill is performed by the v2.1 probe-visibility-fix backfill
+        # script — this column is added as nullable so legacy rows remain
+        # readable until backfilled.
+        try:
+            self.conn.execute(
+                "ALTER TABLE experiments ADD COLUMN probe_visibility TEXT"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
 
     def close(self):
         self.conn.close()
@@ -153,6 +175,7 @@ class Database:
         topology: str = "full_mesh",
         cycle_delay_s: float = 30.0,
         max_turns: Optional[int] = None,
+        probe_visibility: Optional[str] = None,
     ) -> str:
         import json
 
@@ -160,10 +183,11 @@ class Database:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """INSERT INTO experiments
-               (experiment_id, name, description, topology, cycle_delay_s, max_turns, config_json, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (experiment_id, name, description, topology, cycle_delay_s, max_turns,
+                config_json, created_at, probe_visibility)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (experiment_id, name, description, topology, cycle_delay_s, max_turns,
-             json.dumps(config), now),
+             json.dumps(config), now, probe_visibility),
         )
         self.conn.commit()
         return experiment_id

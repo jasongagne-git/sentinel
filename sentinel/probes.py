@@ -322,6 +322,7 @@ class ProbeRunner:
         categories: Optional[list[str]] = None,
         strategy: str = "scheduled",
         trigger_config: Optional[TriggerConfig] = None,
+        probe_visibility: str = "hidden",
     ):
         """
         Args:
@@ -333,11 +334,21 @@ class ProbeRunner:
             categories: Which probe categories to run (default: all)
             strategy: "scheduled", "triggered", or "hybrid"
             trigger_config: Thresholds for triggered/hybrid strategies
+            probe_visibility: "hidden" (default, recommended) writes injected
+                probe responses with visibility='hidden' so they are filtered
+                out of agent context windows by the runtime. "public" writes
+                them with visibility='public' — they enter conversation history
+                and contaminate every other agent's context. Only use 'public'
+                when contamination is the deliberate research variable.
         """
         if mode not in ("shadow", "injected", "both"):
             raise ValueError(f"Invalid probe mode: {mode}. Use 'shadow', 'injected', or 'both'")
         if strategy not in ("scheduled", "triggered", "hybrid"):
             raise ValueError(f"Invalid probe strategy: {strategy}. Use 'scheduled', 'triggered', or 'hybrid'")
+        if probe_visibility not in ("public", "hidden"):
+            raise ValueError(
+                f"Invalid probe_visibility: {probe_visibility}. Use 'public' or 'hidden'"
+            )
 
         self.db = db
         self.client = client
@@ -346,6 +357,7 @@ class ProbeRunner:
         self.interval = interval
         self.categories = categories or list(PROBE_PROMPTS.keys())
         self.strategy = strategy
+        self.probe_visibility = probe_visibility
 
         # Drift monitor for triggered/hybrid strategies
         self.drift_monitor: Optional[DriftMonitor] = None
@@ -571,7 +583,11 @@ class ProbeRunner:
                 "inference_ms": 0,
             }
 
-        # Store as a regular message (visible to other agents)
+        # Store as a message in the conversation log. The visibility column
+        # is the source of truth for whether other agents see this in their
+        # context window — see runtime _get_visible_messages. Default is
+        # 'hidden' (no contamination); 'public' is opt-in for research that
+        # deliberately wants probe responses in agent context.
         message_id = self.db.store_message(
             experiment_id=self.experiment_id,
             agent_id=agent.agent_id,
@@ -582,7 +598,7 @@ class ProbeRunner:
             inference_ms=response["inference_ms"],
             prompt_tokens=response["prompt_tokens"],
             completion_tokens=response["completion_tokens"],
-            visibility="public",
+            visibility=self.probe_visibility,
         )
 
         # Also log in probes table
